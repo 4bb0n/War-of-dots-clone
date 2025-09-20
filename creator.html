@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Map Creator</title>
+    <style>
+        body { font-family: sans-serif; display: flex; gap: 20px; }
+        #map-canvas { background-color: rgb(139, 208, 139); border: 1px solid black; cursor: crosshair; }
+        .controls { display: flex; flex-direction: column; gap: 15px; }
+        .control-group { border: 1px solid #ccc; padding: 10px; border-radius: 5px; }
+        button { padding: 10px; border: 2px solid transparent; cursor: pointer; }
+        .selected { border-color: gold; background-color: #eee; }
+        .instructions { font-size: 0.9em; color: #555; }
+    </style>
+</head>
+<body>
+    <canvas id="map-canvas" width="1000" height="700"></canvas>
+    <div class="controls">
+        <h3>Controls</h3>
+        
+        <div class="control-group">
+            <strong>Brush Mode:</strong><br>
+            <button id="brush-infantry">Place Infantry</button>
+            <button id="brush-tank">Place Tank</button>
+            <button id="brush-city" class="selected">Place City</button>
+            <button id="brush-territory">Paint Territory</button>
+        </div>
+
+        <div class="control-group">
+            <strong>Team:</strong><br>
+            <button id="team-red" class="selected">Red</button>
+            <button id="team-blue">Blue</button>
+            <button id="team-neutral">Neutral (Territory Only)</button>
+        </div>
+        
+        <!-- NEW: Load/Export Controls -->
+        <div class="control-group">
+            <strong>File:</strong><br>
+            <input type="file" id="load-map-input" accept=".json" style="display: none;">
+            <button id="load-map-button">Load Map</button>
+            <button id="export-map">Export Map</button>
+        </div>
+
+        <div class="instructions">
+            <p><b>Left-click:</b> Place selected object/paint territory.</p>
+            <p><b>Right-click:</b> Delete an object (unit or city).</p>
+        </div>
+    </div>
+    <script src="creator.js"></script>
+</body>
+</html>
