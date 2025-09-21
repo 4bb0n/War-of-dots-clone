@@ -37,15 +37,13 @@ function areUnitsColliding(unit1, unit2) {
 }
 
 function resolveCollision(unit1, unit2) {
-    // Handle teammate collision (soft collision)
+    // Handle teammate collision (soft collision) - same as before
     if (unit1.team === unit2.team) {
-        // Soft collision for teammates - just push them apart gently
         const dx = unit2.x - unit1.x;
         const dy = unit2.y - unit1.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
         
         if (distance === 0) {
-            // Units are on exactly the same position, push them apart randomly
             const angle = Math.random() * Math.PI * 2;
             unit1.x += Math.cos(angle) * (unit1.radius + unit2.radius) * 0.5;
             unit1.y += Math.sin(angle) * (unit1.radius + unit2.radius) * 0.5;
@@ -54,56 +52,67 @@ function resolveCollision(unit1, unit2) {
             return;
         }
         
-        // Calculate gentle separation for teammates
         const overlap = (unit1.radius + unit2.radius) - distance;
         if (overlap > 0) {
             const nx = dx / distance;
             const ny = dy / distance;
-            
-            // Gentle separation - only push apart by a small amount
-            const separation = overlap * 0.3; // Much gentler than enemy collision
+            const separation = overlap * 0.3;
             unit1.x -= nx * separation;
             unit1.y -= ny * separation;
             unit2.x += nx * separation;
             unit2.y += ny * separation;
         }
-        return; // Don't proceed with combat logic for teammates
+        return;
     }
 
     // Enemy collision (hard collision with combat)
-    // Store the original paths before stopping units (only if not already stored)
     if (!unit1.storedPath && unit1.path && unit1.path.length > 0) {
-        unit1.storedPath = [...unit1.path]; // Make a copy of the path
+        unit1.storedPath = [...unit1.path];
     }
     if (!unit2.storedPath && unit2.path && unit2.path.length > 0) {
-        unit2.storedPath = [...unit2.path]; // Make a copy of the path
+        unit2.storedPath = [...unit2.path];
     }
     
-    // Stop both units by clearing their current paths
     unit1.path = [];
     unit2.path = [];
     
-    // Add shake effect
     const shakeIntensity = 1;
     unit1.shakeX = (Math.random() - 0.5) * shakeIntensity;
     unit1.shakeY = (Math.random() - 0.5) * shakeIntensity;
     unit2.shakeX = (Math.random() - 0.5) * shakeIntensity;
     unit2.shakeY = (Math.random() - 0.5) * shakeIntensity;
     
-    // Mark units as fighting
     unit1.isFighting = true;
     unit2.isFighting = true;
     
-    // Reset fighting timer
-    unit1.fightTimer = 60; // frames
-    unit2.fightTimer = 60; // frames
+    unit1.fightTimer = 60;
+    unit2.fightTimer = 60;
     
-    // Apply damage each frame they're colliding
-    const damagePerFrame = 1;
-    unit1.health -= damagePerFrame;
-    unit2.health -= damagePerFrame;
+    // NEW: Health-based damage system
+    const healthDifference = unit1.health - unit2.health;
+    const maxHealthBonus = 0.5; // Maximum bonus damage based on health difference
     
-    // Mark units as dead if health drops to 0 or below
+    // Calculate damage multipliers based on health advantage
+    let unit1DamageMultiplier = 1.0;
+    let unit2DamageMultiplier = 1.0;
+    
+    if (healthDifference > 0) {
+        // Unit1 has more health, gets damage bonus
+        const healthAdvantage = Math.min(healthDifference / 1000, 1.0); // Normalize to 0-1 range
+        unit1DamageMultiplier = 1.0 + (healthAdvantage * maxHealthBonus);
+    } else if (healthDifference < 0) {
+        // Unit2 has more health, gets damage bonus
+        const healthAdvantage = Math.min(Math.abs(healthDifference) / 1000, 1.0);
+        unit2DamageMultiplier = 1.0 + (healthAdvantage * maxHealthBonus);
+    }
+    
+    // Apply damage with health-based multipliers
+    const unit1ActualDamage = unit1.attackDamage * unit1DamageMultiplier;
+    const unit2ActualDamage = unit2.attackDamage * unit2DamageMultiplier;
+    
+    unit1.health -= unit2ActualDamage;
+    unit2.health -= unit1ActualDamage;
+    
     if (unit1.health <= 0) {
         unit1.isDead = true;
     }
@@ -171,21 +180,6 @@ function handleCollisions(units) {
                 resolveCollision(unit1, unit2);
             }
         }
-    }
-}
-
-// Optional combat system
-function handleCombat(unit1, unit2) {
-    // Simple combat: reduce health of both units
-    unit1.health -= unit2.attackDamage;
-    unit2.health -= unit1.attackDamage;
-    
-    // Remove dead units (this would need to be handled more carefully in a real game)
-    if (unit1.health <= 0) {
-        unit1.isDead = true;
-    }
-    if (unit2.health <= 0) {
-        unit2.isDead = true;
     }
 }
 
@@ -472,7 +466,7 @@ function checkCityCaptures(game) {
                 }
                 
                 // Reset spawn timer and count for new owner
-                city.spawnInterval = 1000;
+                city.spawnInterval = 1500;
                 city.spawnCount = 0;
                 
                 // Optional: Add capture effect
@@ -549,6 +543,19 @@ function searchGame(id){
 }
 
 function startGame(game) {
+    // IMPORTANT: Reset/clear any previous game state
+    game.redUnits = [];
+    game.blueUnits = [];
+    game.redCities = [];
+    game.blueCities = [];
+    game.territoryGrid = null; // Force territory grid to be reinitialized
+
+    game.borderPoints = [];
+    const BORDER_RESOLUTION = 15;
+    for (let y = 0; y <= 600; y += BORDER_RESOLUTION) {
+        game.borderPoints.push({ x: 500, y: y, targetX: 500 });
+    }
+    
     if (customMap) {
         // --- LOAD FROM CUSTOM MAP ---
         
@@ -559,7 +566,7 @@ function startGame(game) {
             else game.blueCities.push(newCity);
         });
 
-        // Load pre-placed units from the map file (NEW)
+        // Load pre-placed units from the map file
         if (customMap.units) {
             customMap.units.forEach(unitData => {
                 const newUnit = new Unit(unitData.x, unitData.y, unitData.team, unitData.type);
@@ -568,8 +575,15 @@ function startGame(game) {
             });
         }
 
-        // Initialize territory from the map file
-        game.territoryGrid = customMap.territoryGrid;
+        // Initialize territory from the custom map file
+        if (customMap.territoryGrid) {
+            // Deep copy the territory grid from the map to avoid modifying the original
+            game.territoryGrid = customMap.territoryGrid.map(row => [...row]);
+        } else {
+            // If custom map doesn't have territory grid, initialize default one
+            game.territoryGrid = null; // This will trigger initializeTerritoryGrid in updateBorder
+        }
+        
         game.GRID_SIZE = 20;
         game.GRID_WIDTH = 1000 / 20;
         game.GRID_HEIGHT = 600 / 20;
@@ -587,10 +601,10 @@ function startGame(game) {
         }
         game.blueCities = [new City(900, 100, "blue"), new City(900, 300, "blue"), new City(900, 500, "blue")];
         game.redCities = [new City(50, 100, "red"), new City(50, 300, "red"), new City(50, 500, "red")];
+        
+        // Force territory grid to be reinitialized with default setup
+        game.territoryGrid = null;
     }
-
-    // NOTE: The old logic for spawning initial units at cities has been removed.
-    // The map creator is now the single source of truth for the starting layout.
 
     io.to(game.teamRed).emit('gameStart', { team: 'red', units: [...game.redUnits, ...game.blueUnits], cities: [...game.redCities, ...game.blueCities] });
     io.to(game.teamBlue).emit('gameStart', { team: 'blue', units: [...game.redUnits, ...game.blueUnits], cities: [...game.redCities, ...game.blueCities] });
@@ -632,7 +646,7 @@ setInterval(() => {
         allCities.forEach(city => {
             city.update();
             if (city.spawnInterval === 0) {
-                city.spawnInterval = 1000;
+                city.spawnInterval = 2000;
                 const team = city.team;
                 const unitType = city.spawnCount < 3 ? "infantry" : "tank";
                 if (city.spawnCount < 3) city.spawnCount += 1;
