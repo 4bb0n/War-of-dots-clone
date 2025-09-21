@@ -39,14 +39,14 @@ class Unit{
         if (this.type === "infantry"){
             this.health = 1000;
             this.maxHealth = 1000;
-            this.attackDamage = 0.05;
+            this.attackDamage = 1;
             this.speed = 0.5;
             this.speed = 0.5; // px per frame
         }
         else if (this.type === "tank"){
             this.health = 3000;
             this.maxHealth = 3000;
-            this.attackDamage = 0.1;
+            this.attackDamage = 2;
             this.speed = 0.3;
             this.speed = 0.4; // px per frame
         }
