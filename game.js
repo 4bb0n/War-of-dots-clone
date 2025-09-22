@@ -1,12 +1,13 @@
 class Game{
-    constructor(player){
-        this.teamRed = player
-        this.teamBlue = null
+    constructor(player1, player2 = null){
+        this.teamRed = player1
+        this.teamBlue = player2
         this.redUnits = []
         this.blueUnits = []
-        this.started = false;
+        this.started = !!(player1 && player2);
         this.redCities = []
         this.blueCities = [];
+        this.canDelete = false;
 
         // Initialize the border down the middle of the map
         this.borderPoints = [];
@@ -16,11 +17,18 @@ class Game{
         }
     }
     startGame(){
-        this.started = true
+        this.started = true;
+        setTimeout(() => {
+            this.canDelete = true;
+        }, 3000);
     }
     joinGame(player){
         this.teamBlue = player
         this.startGame()
+    }
+    completed(id){
+        if (this.teamRed === id) this.teamRed = null;
+        if (this.teamBlue === id) this.teamBlue = null;
     }
 }
 let unitIdCounter = 0;
@@ -111,6 +119,7 @@ class City{
         this.team = team;
         this.spawnCount = 0;
     }
+
     update(){
         this.spawnInterval -= 1;
     }
