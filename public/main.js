@@ -32,9 +32,19 @@ socket.on("gameComplete", (data) => {
     console.log("Game complete event received:", data);
     units = [];
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const message = data.win 
-        ? "You won! The opponent disconnected." 
-        : "You lost. The opponent captured all cities.";
+    const message = ""
+    if (data.win){
+        message = "You win!"
+        setTimeout(() => {
+            window.location.href = "/";
+        }, 4000);
+    }
+    else {
+        message = "You lose."
+        setTimeout(() => {
+            window.location.href = "/";
+        }, 4000);
+    }
     alert(`Game complete! ${message}`);
 })
 
@@ -473,6 +483,36 @@ function drawUnit(unit) {
         ctx.setLineDash([]);
     }
     
+    // NEW: Draw cut-off supply line indicator
+    if (unit.isCutOff && unit.cutOffTimer > 0) {
+        const now = Date.now();
+        const pulseIntensity = Math.sin(now * 0.01) * 0.3 + 0.7; // Pulsing effect
+        
+        // Draw warning circle around cut-off units
+        ctx.beginPath();
+        ctx.arc(displayX, displayY, unit.radius + 12, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255, 165, 0, ${pulseIntensity})`; // Orange warning
+        ctx.lineWidth = 3;
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.closePath();
+        
+        // Draw supply cut-off icon (X symbol)
+        ctx.strokeStyle = `rgba(255, 0, 0, ${pulseIntensity})`;
+        ctx.lineWidth = 2;
+        const iconSize = 4;
+        const iconX = displayX;
+        const iconY = displayY - unit.radius - 16;
+        
+        ctx.beginPath();
+        ctx.moveTo(iconX - iconSize, iconY - iconSize);
+        ctx.lineTo(iconX + iconSize, iconY + iconSize);
+        ctx.moveTo(iconX + iconSize, iconY - iconSize);
+        ctx.lineTo(iconX - iconSize, iconY + iconSize);
+        ctx.stroke();
+    }
+    
     // Regular unit drawing
     ctx.beginPath();
     ctx.arc(displayX, displayY, unit.radius, 0, Math.PI * 2);
@@ -510,7 +550,7 @@ function drawUnit(unit) {
         ctx.closePath();
     }
     
-    // Draw health bar
+    // Draw health bar with different colors for cut-off units
     if (unit.health !== undefined) {
         const maxHealth = unit.type === "tank" ? 3000 : 1000;
         const healthPercentage = Math.max(0, unit.health / maxHealth);
@@ -520,13 +560,22 @@ function drawUnit(unit) {
         const barX = displayX - barWidth / 2;
         const barY = displayY - unit.radius - 8;
         
+        // Background bar (red)
         ctx.fillStyle = 'red';
         ctx.fillRect(barX, barY, barWidth, barHeight);
         
-        ctx.fillStyle = 'green';
+        // Health bar - different color if cut off
+        if (unit.isCutOff) {
+            // Orange health bar for cut-off units to show they're in danger
+            ctx.fillStyle = 'orange';
+        } else {
+            // Normal green health bar
+            ctx.fillStyle = 'green';
+        }
         ctx.fillRect(barX, barY, barWidth * healthPercentage, barHeight);
         
-        ctx.strokeStyle = 'black';
+        // Border around health bar - red border for cut-off units
+        ctx.strokeStyle = unit.isCutOff ? 'red' : 'black';
         ctx.lineWidth = 1;
         ctx.strokeRect(barX, barY, barWidth, barHeight);
     }
