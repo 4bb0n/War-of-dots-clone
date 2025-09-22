@@ -364,7 +364,7 @@ function handleTeamEncirclement(game, allUnits, teamName, teamValue) {
 }
 
 function handleEncircledUnitAttrition(game, allUnits) {
-    const ATTRITION_DAMAGE = 1.5; // Health lost per tick when cut off from supply
+    const ATTRITION_DAMAGE = 1.3; // Health lost per tick when cut off from supply
     const ATTRITION_CHECK_RADIUS = 100; // How far to check for supply connection
     
     allUnits.forEach(unit => {
@@ -929,23 +929,72 @@ function startGame(game) {
 
 // --- Game Logic Functions ---
 function searchForPublicGame(socket, map) {
-    // Ensure a queue for this map exists
-    if (!publicGameQueues[map]) {
-        publicGameQueues[map] = [];
+    // --- Case 1: Player wants ANY map ---
+    if (map === 'any') {
+        // Find any waiting opponent in any specific queue
+        let opponentSocketId = null;
+        let opponentMap = null;
+
+        for (const specificMap in publicGameQueues) {
+            if (specificMap !== 'any' && publicGameQueues[specificMap].length > 0) {
+                opponentSocketId = publicGameQueues[specificMap].shift(); // Take opponent from their queue
+                opponentMap = specificMap;
+                break;
+            }
+        }
+
+        if (opponentSocketId) {
+            // Found a potential match
+            const opponentSocket = io.sockets.sockets.get(opponentSocketId);
+            waitingCount -= 2;
+            playingCount += 2;
+
+            if (opponentSocket) {
+                // Match is good, start the game on the opponent's chosen map
+                const gameId = generateGameId();
+                const game = new Game(opponentSocketId, socket.id); 
+                game.id = gameId;
+                game.map = opponentMap;
+                activeGames[gameId] = game;
+
+                socket.join(gameId);
+                opponentSocket.join(gameId);
+                socket.gameId = gameId;
+                opponentSocket.gameId = gameId;
+
+                console.log(`Starting public game ${gameId} on map ${opponentMap} between ${opponentSocketId} and ${socket.id}`);
+                startGame(game);
+                broadcastPlayerCounts();
+            } else {
+                // Opponent disconnected. Correct counts and have the current player search again.
+                waitingCount += 1; // We subtracted 2, but only one (the opponent) is gone.
+                playingCount -= 2; // Game didn't start.
+                broadcastPlayerCounts();
+                searchForPublicGame(socket, 'any'); // Try again
+            }
+        } else {
+            // No opponents waiting. Add this player to the 'any' queue.
+            if (!publicGameQueues['any']) publicGameQueues['any'] = [];
+            publicGameQueues['any'].push(socket.id);
+            console.log(`Player ${socket.id} is waiting in the 'any' queue.`);
+        }
+        return;
     }
 
-    if (publicGameQueues[map].length > 0) {
-        // Match found for this specific map
-        const opponentSocketId = publicGameQueues[map].shift();
+    // --- Case 2: Player wants a SPECIFIC map ---
+    // First, check the 'any' queue for an opponent for the fastest match.
+    if (publicGameQueues['any'] && publicGameQueues['any'].length > 0) {
+        const opponentSocketId = publicGameQueues['any'].shift();
         const opponentSocket = io.sockets.sockets.get(opponentSocketId);
-        waitingCount -= 2; // Two players are now matched
+        waitingCount -= 2;
         playingCount += 2;
 
         if (opponentSocket) {
+            // Match is good, start game on the specific map.
             const gameId = generateGameId();
             const game = new Game(opponentSocketId, socket.id);
             game.id = gameId;
-            game.map = map; // Use the requested map
+            game.map = map; // Use the specific map
             activeGames[gameId] = game;
 
             socket.join(gameId);
@@ -957,14 +1006,50 @@ function searchForPublicGame(socket, map) {
             startGame(game);
             broadcastPlayerCounts();
         } else {
-            // Opponent disconnected before match, put current player in queue for this map
-            publicGameQueues[map].push(socket.id);
-            // Recursively search, in case another player was also waiting
-            searchForPublicGame(socket, map);
+            // Opponent disconnected.
+            waitingCount += 1;
+            playingCount -= 2;
+            broadcastPlayerCounts();
+            searchForPublicGame(socket, map); // Try again
+        }
+        return;
+    }
+
+    // No one in 'any' queue, check the specific map queue (original logic).
+    if (!publicGameQueues[map]) publicGameQueues[map] = [];
+
+    if (publicGameQueues[map].length > 0) {
+        const opponentSocketId = publicGameQueues[map].shift();
+        const opponentSocket = io.sockets.sockets.get(opponentSocketId);
+        waitingCount -= 2;
+        playingCount += 2;
+
+        if (opponentSocket) {
+            const gameId = generateGameId();
+            const game = new Game(opponentSocketId, socket.id);
+            game.id = gameId;
+            game.map = map;
+            activeGames[gameId] = game;
+
+            socket.join(gameId);
+            opponentSocket.join(gameId);
+            socket.gameId = gameId;
+            opponentSocket.gameId = gameId;
+
+            console.log(`Starting public game ${gameId} on map ${map} between ${opponentSocketId} and ${socket.id}`);
+            startGame(game);
+            broadcastPlayerCounts();
+        } else {
+            // Opponent disconnected.
+            waitingCount += 1;
+            playingCount -= 2;
+            broadcastPlayerCounts();
+            searchForPublicGame(socket, map); // Try again
         }
     } else {
-        // No match found for this map, add to queue
+        // No match found, add to queue for the specific map.
         publicGameQueues[map].push(socket.id);
+        console.log(`Player ${socket.id} is waiting in the '${map}' queue.`);
     }
 }
 
