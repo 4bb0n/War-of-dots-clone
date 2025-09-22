@@ -16,20 +16,24 @@
         color: rgb(41, 41, 41);
         font-family: sans-serif;
     }
-    #container{
+    .container{
         display: flex;
         flex-direction: column;
         gap: 20px;
+        background-color: white;
+        padding: 40px;
+        border-radius: 10px;
+        border: 4px solid black;
     }
-    #container button{
-        height: 100px;
+    .container button{
+        height: 60px;
         width: 400px;
         font-size: 20px;
         border: 4px solid black;
         border-radius: 5px;
         cursor: pointer;
     }
-    #container button:hover{
+    .container button:hover{
         animation-name: fadeDarkBackground;
         animation-duration: 0.5s;
         animation-timing-function: ease-out;
@@ -37,12 +41,11 @@
     }
     #waiting-message {
         display: none; /* Hidden by default */
-        font-size: 24px;
-        text-align: center;
     }
     @keyframes fadeDarkBackground {
         0%{
             background-color: white;
+            color: rgb(41, 41, 41);
         }
         100%{
             background-color: rgb(41, 41, 41);
@@ -56,6 +59,7 @@
         }
         100%{
             background-color: white;
+            color: rgb(41, 41, 41);
         }
     }
     .gameButtonsAnimate{
@@ -64,43 +68,125 @@
         animation-timing-function: ease-in-out;
         animation-fill-mode: forwards;
     }
+    #player-counts {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background-color: rgba(0, 0, 0, 0.5);
+        color: white;
+        padding: 10px;
+        border-radius: 5px;
+        font-family: sans-serif;
+    }
 </style>
 <body>
-    <div id="container">
+    <div id="initial-container" class="container">
         <button id="create-game" class="gameButtons">Create Game</button>
         <button id="join-game" class="gameButtons">Join Game</button>
     </div>
-    <div id="waiting-message">
+
+    <div id="join-options-container" class="container" style="display: none;">
+        <div class="form-group">
+            <label for="map-select" style="font-weight: bold;">Choose a Map for Public Match:</label>
+            <select id="map-select" style="width: 100%; height: 40px; font-size: 16px; border: 2px solid black; margin-top: 5px;"></select>
+        </div>
+        <button id="join-public-game" class="gameButtons">Join Public Match</button>
+        <button id="join-private-game" class="gameButtons">Join with Code</button>
+        <button id="back-to-main" class="gameButtons">Back</button>
+    </div>
+
+    <div id="waiting-message" style="display: none;">
         <h2>Searching for a game...</h2>
         <p>Please wait while we find another player.</p>
+    </div>
+
+    <div id="player-counts">
+        <p>Players Online: <span id="total-players">0</span></p>
+        <p>In Game: <span id="playing-players">0</span></p>
+        <p>In Queue: <span id="waiting-players">0</span></p>
     </div>
 
     <!-- Add socket.io client library -->
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        document.getElementById("create-game").addEventListener("click", () => window.location.href = "/gameCreator.html");
-        
+        const createGameButton = document.getElementById("create-game");
         const joinGameButton = document.getElementById("join-game");
-        const container = document.getElementById("container");
+        const joinPublicGameButton = document.getElementById("join-public-game");
+        const joinPrivateGameButton = document.getElementById("join-private-game");
+        const backToMainButton = document.getElementById("back-to-main");
+        const mapSelect = document.getElementById("map-select");
+
+        const initialContainer = document.getElementById("initial-container");
+        const joinOptionsContainer = document.getElementById("join-options-container");
         const waitingMessage = document.getElementById("waiting-message");
 
+        let socket;
+
+        // --- Live Player Counts ---
+        function setupPlayerCountListener() {
+            const liveSocket = io();
+            liveSocket.on('updatePlayerCounts', (counts) => {
+                document.getElementById('total-players').textContent = counts.total;
+                document.getElementById('playing-players').textContent = counts.playing;
+                document.getElementById('waiting-players').textContent = counts.waiting;
+            });
+        }
+        setupPlayerCountListener();
+
+        // --- Fetch Maps for Public Games ---
+        fetch('/maps')
+            .then(response => response.json())
+            .then(maps => {
+                maps.forEach(mapFile => {
+                    const option = document.createElement('option');
+                    option.value = mapFile;
+                    option.textContent = mapFile.replace('.json', '');
+                    mapSelect.appendChild(option);
+                });
+            });
+
+        // --- Navigation ---
+        createGameButton.addEventListener("click", () => window.location.href = "/gameCreator.html");
+
         joinGameButton.addEventListener("click", () => {
-            const gameCode = prompt("Enter a game code to join a specific game, or leave blank to find a public match:");
+            initialContainer.style.display = 'none';
+            joinOptionsContainer.style.display = 'flex';
+        });
 
-            const socket = io();
+        backToMainButton.addEventListener("click", () => {
+            joinOptionsContainer.style.display = 'none';
+            initialContainer.style.display = 'flex';
+        });
 
-            if (gameCode) {
-                // Join a custom game by code
-                socket.emit('joinGame', gameCode);
-            } else {
-                // Find a public game
-                container.style.display = 'none';
-                waitingMessage.style.display = 'block';
-                socket.emit('findGame');
+        // --- Game Joining Logic ---
+        joinPublicGameButton.addEventListener("click", () => {
+            const selectedMap = mapSelect.value;
+            if (!selectedMap) {
+                alert('Please select a map to search for.');
+                return;
             }
+            joinOptionsContainer.style.display = 'none';
+            waitingMessage.style.display = 'block';
+            startSocketConnection();
+            // Send map choice with the findGame event
+            socket.emit('findGame', { map: selectedMap });
+        });
+
+        joinPrivateGameButton.addEventListener("click", () => {
+            const gameCode = prompt("Enter the 4-digit game code:");
+            if (gameCode && gameCode.trim().length > 0) {
+                startSocketConnection();
+                socket.emit('joinGame', gameCode.trim());
+            }
+        });
+
+        function startSocketConnection() {
+            if (socket && socket.connected) return;
+
+            socket = io();
 
             socket.on("gameReady", (data) => {
-                window.location.href = `/gamepage?sid=${data.socketId}`; // Navigate with the temp socket ID
+                window.location.href = `/gamepage?sid=${data.socketId}`;
             });
 
             socket.on('connect_error', (err) => {
@@ -110,21 +196,22 @@
             socket.on('joinError', (message) => {
                 alert(`Could not join game: ${message}`);
                 // Reset UI
-                container.style.display = 'flex';
+                joinOptionsContainer.style.display = 'flex';
                 waitingMessage.style.display = 'none';
-                socket.disconnect();
+                if (socket) socket.disconnect();
             });
-        });
-        const buttons = document.querySelectorAll(".gameButtons")
-        console.log(buttons)
+        }
+
+        // --- Button Animations ---
+        const buttons = document.querySelectorAll(".gameButtons");
         buttons.forEach(button => {
             button.addEventListener("mouseleave", () => {
-                button.classList.add("gameButtonsAnimate")
-            })
+                button.classList.add("gameButtonsAnimate");
+            });
             button.addEventListener("mouseover", () => {
                 if (!button.classList.contains("gameButtonsAnimate")) return;
-                button.classlist.remove("gameButtonsAnimate")
-            })
+                button.classList.remove("gameButtonsAnimate");
+            });
         });
     </script>
 </body>
