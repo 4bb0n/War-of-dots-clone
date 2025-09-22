@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>War of dots clone</title>
+</head>
+<style>
+    body{
+        background-color: rgb(139, 208, 139);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        overflow: hidden;
+        color: rgb(41, 41, 41);
+        font-family: sans-serif;
+    }
+    #container{
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+    }
+    #container button{
+        height: 100px;
+        width: 400px;
+        font-size: 20px;
+        border: 4px solid black;
+        border-radius: 5px;
+        cursor: pointer;
+    }
+    #container button:hover{
+        animation-name: fadeDarkBackground;
+        animation-duration: 0.5s;
+        animation-timing-function: ease-out;
+        animation-fill-mode: forwards;
+    }
+    #waiting-message {
+        display: none; /* Hidden by default */
+        font-size: 24px;
+        text-align: center;
+    }
+    @keyframes fadeDarkBackground {
+        0%{
+            background-color: white;
+        }
+        100%{
+            background-color: rgb(41, 41, 41);
+            color: white;
+        }
+    }
+    @keyframes fadeLightBackground {
+        0%{
+            background-color: rgb(41, 41, 41);
+            color: white;
+        }
+        100%{
+            background-color: white;
+        }
+    }
+    .gameButtonsAnimate{
+        animation-name: fadeLightBackground;
+        animation-duration: 0.5s;
+        animation-timing-function: ease-in-out;
+        animation-fill-mode: forwards;
+    }
+</style>
+<body>
+    <div id="container">
+        <button id="create-game" class="gameButtons">Create Game</button>
+        <button id="join-game" class="gameButtons">Join Game</button>
+    </div>
+    <div id="waiting-message">
+        <h2>Searching for a game...</h2>
+        <p>Please wait while we find another player.</p>
+    </div>
+
+    <!-- Add socket.io client library -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        document.getElementById("create-game").addEventListener("click", () => window.location.href = "/gameCreator.html");
+        
+        const joinGameButton = document.getElementById("join-game");
+        const container = document.getElementById("container");
+        const waitingMessage = document.getElementById("waiting-message");
+
+        joinGameButton.addEventListener("click", () => {
+            const gameCode = prompt("Enter a game code to join a specific game, or leave blank to find a public match:");
+
+            const socket = io();
+
+            if (gameCode) {
+                // Join a custom game by code
+                socket.emit('joinGame', gameCode);
+            } else {
+                // Find a public game
+                container.style.display = 'none';
+                waitingMessage.style.display = 'block';
+                socket.emit('findGame');
+            }
+
+            socket.on("gameReady", (data) => {
+                window.location.href = `/gamepage?sid=${data.socketId}`; // Navigate with the temp socket ID
+            });
+
+            socket.on('connect_error', (err) => {
+                waitingMessage.innerHTML = '<h2>Connection Failed</h2><p>Could not connect to the server. Please try again later.</p>';
+            });
+
+            socket.on('joinError', (message) => {
+                alert(`Could not join game: ${message}`);
+                // Reset UI
+                container.style.display = 'flex';
+                waitingMessage.style.display = 'none';
+                socket.disconnect();
+            });
+        });
+        const buttons = document.querySelectorAll(".gameButtons")
+        console.log(buttons)
+        buttons.forEach(button => {
+            button.addEventListener("mouseleave", () => {
+                button.classList.add("gameButtonsAnimate")
+            })
+            button.addEventListener("mouseover", () => {
+                if (!button.classList.contains("gameButtonsAnimate")) return;
+                button.classlist.remove("gameButtonsAnimate")
+            })
+        });
+    </script>
+</body>
+</html>

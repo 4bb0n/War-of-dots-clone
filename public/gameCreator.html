@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create Game</title>
+    <style>
+        body {
+            background-color: rgb(139, 208, 139);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            color: rgb(41, 41, 41);
+            font-family: sans-serif;
+            text-align: center;
+        }
+        #container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            background-color: white;
+            padding: 40px;
+            border-radius: 10px;
+            border: 4px solid black;
+        }
+        #container button, #container select {
+            height: 60px;
+            width: 400px;
+            font-size: 20px;
+            border: 4px solid black;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #container button:hover {
+            background-color: rgb(41, 41, 41);
+            color: white;
+        }
+        #game-code-container {
+            display: none;
+        }
+        #game-code {
+            font-size: 24px;
+            font-weight: bold;
+            color: darkred;
+            background-color: #f0f0f0;
+            padding: 10px;
+            border-radius: 5px;
+            border: 2px dashed #ccc;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="setup-container">
+            <h2>Create a New Game</h2>
+            <div class="form-group">
+                <label for="map-select"><h3>Choose a Map:</h3></label>
+                <select id="map-select">
+                    <!-- Maps will be loaded here -->
+                </select>
+            </div>
+            <button id="create-game-btn">Create Game</button>
+            <button id="back-btn">Back to Home</button>
+        </div>
+        <div id="game-code-container">
+            <h2>Game Created!</h2>
+            <p>Share this code with a friend to join:</p>
+            <p id="game-code">------</p>
+            <h3>Waiting for another player to join...</h3>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const mapSelect = document.getElementById('map-select');
+        const createGameBtn = document.getElementById('create-game-btn');
+        const backBtn = document.getElementById('back-btn');
+        const setupContainer = document.getElementById('setup-container');
+        const gameCodeContainer = document.getElementById('game-code-container');
+        const gameCodeDisplay = document.getElementById('game-code');
+
+        // Fetch and populate maps
+        fetch('/maps')
+            .then(response => response.json())
+            .then(maps => {
+                maps.forEach(mapFile => {
+                    const option = document.createElement('option');
+                    option.value = mapFile;
+                    option.textContent = mapFile.replace('.json', '');
+                    mapSelect.appendChild(option);
+                });
+            });
+
+        backBtn.addEventListener('click', () => {
+            window.location.href = '/';
+        });
+
+        createGameBtn.addEventListener('click', () => {
+            const selectedMap = mapSelect.value;
+            const socket = io();
+
+            socket.emit('createGame', { map: selectedMap });
+
+            socket.on('gameCreated', (data) => {
+                setupContainer.style.display = 'none';
+                gameCodeContainer.style.display = 'block';
+                gameCodeDisplay.textContent = data.gameId;
+            });
+
+            socket.on('gameReady', (data) => {
+                window.location.href = `/gamepage?sid=${data.socketId}`; // Navigate with the temp socket ID
+            });
+        });
+    </script>
+</body>
+</html>
