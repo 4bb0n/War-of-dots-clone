@@ -32,12 +32,20 @@ app.get('/maps', (req, res) => {
 });
 
 // --- Game State Management ---
-let publicGameQueue = []; // Holds socket IDs of players waiting for a public game
+let publicGameQueues = {}; // Key: mapName, Value: array of socket IDs
 const activeGames = {}; // Holds all active games, keyed by a unique game ID
 
 let playerCount = 0;
 let playingCount = 0;
 let waitingCount = 0;
+
+function broadcastPlayerCounts() {
+    io.emit('updatePlayerCounts', {
+        playing: playingCount,
+        waiting: waitingCount,
+        total: playerCount
+    });
+}
 
 function generateGameId() {
     return Math.floor(1000 + Math.random() * 9000).toString();
@@ -356,7 +364,7 @@ function handleTeamEncirclement(game, allUnits, teamName, teamValue) {
 }
 
 function handleEncircledUnitAttrition(game, allUnits) {
-    const ATTRITION_DAMAGE = 2; // Health lost per tick when cut off from supply
+    const ATTRITION_DAMAGE = 1.5; // Health lost per tick when cut off from supply
     const ATTRITION_CHECK_RADIUS = 100; // How far to check for supply connection
     
     allUnits.forEach(unit => {
@@ -640,12 +648,20 @@ function checkCityCaptures(game) {
         if (game.redCities.length / totalCities > 0.7) {
             io.to(game.teamRed).emit('gameComplete', { win: true });
             io.to(game.teamBlue).emit('gameComplete', { win: false });
+            if (game.canDelete) {
+                playingCount -= 2;
+                broadcastPlayerCounts();
+            }
             game.canDelete = true;
             delete activeGames[game.id];
             console.log(`Game ${game.id} ended. Red team wins by city capture!`);
         } else if (game.blueCities.length / totalCities > 0.7) {
             io.to(game.teamBlue).emit('gameComplete', { win: true });
             io.to(game.teamRed).emit('gameComplete', { win: false });
+            if (game.canDelete) {
+                playingCount -= 2;
+                broadcastPlayerCounts();
+            }
             game.canDelete = true;
             delete activeGames[game.id];
             console.log(`Game ${game.id} ended. Blue team wins by city capture!`);
@@ -671,11 +687,14 @@ function updateCityEffects(game) {
 io.on('connection', (socket) => {
     console.log('a player connected:', socket.id);
     playerCount++;
+    broadcastPlayerCounts();
 
-    socket.on('findGame', () => {
-        console.log(`Player ${socket.id} is searching for a public game.`);
+    socket.on('findGame', (options) => {
+        const map = (options && options.map) || 'default.json';
+        console.log(`Player ${socket.id} is searching for a public game on map: ${map}.`);
         waitingCount++;
-        searchForPublicGame(socket);
+        broadcastPlayerCounts();
+        searchForPublicGame(socket, map);
     });
 
     socket.on('createGame', (options) => {
@@ -807,8 +826,19 @@ function startGame(game) {
         console.log('a player disconnected:', socket.id);
         playerCount--;
 
-        // If player was in the public queue, remove them
-        publicGameQueue = publicGameQueue.filter(id => id !== socket.id);
+        let wasWaiting = false;
+        // If player was in any public queue, remove them
+        for (const map in publicGameQueues) {
+            const index = publicGameQueues[map].indexOf(socket.id);
+            if (index > -1) {
+                publicGameQueues[map].splice(index, 1);
+                wasWaiting = true;
+                break;
+            }
+        }
+        if (wasWaiting) {
+            waitingCount--;
+        }
 
         // If player was in a game, end the game
         const gameId = socket.gameId;
@@ -817,11 +847,12 @@ function startGame(game) {
             const opponentId = game.teamRed === socket.id ? game.teamBlue : game.teamRed;
             if (opponentId) {
                 io.to(opponentId).emit('gameComplete', { win: true });
-                playingCount--;
+                playingCount -= 2;
             }
             console.log(`Game ${gameId} ended due to disconnect.`);
             delete activeGames[gameId];
         }
+        broadcastPlayerCounts();
     });
 
     // --- In-Game Actions ---
@@ -897,19 +928,24 @@ function startGame(game) {
 
 
 // --- Game Logic Functions ---
-function searchForPublicGame(socket) {
-    if (publicGameQueue.length > 0) {
-        // Match found
-        const opponentSocketId = publicGameQueue.shift();
+function searchForPublicGame(socket, map) {
+    // Ensure a queue for this map exists
+    if (!publicGameQueues[map]) {
+        publicGameQueues[map] = [];
+    }
+
+    if (publicGameQueues[map].length > 0) {
+        // Match found for this specific map
+        const opponentSocketId = publicGameQueues[map].shift();
         const opponentSocket = io.sockets.sockets.get(opponentSocketId);
-        waitingCount--;
+        waitingCount -= 2; // Two players are now matched
         playingCount += 2;
 
         if (opponentSocket) {
             const gameId = generateGameId();
-            const game = new Game(opponentSocketId, socket.id); // teamRed, teamBlue
+            const game = new Game(opponentSocketId, socket.id);
             game.id = gameId;
-            game.map = 'default.json'; // Public games use the default map
+            game.map = map; // Use the requested map
             activeGames[gameId] = game;
 
             socket.join(gameId);
@@ -917,15 +953,18 @@ function searchForPublicGame(socket) {
             socket.gameId = gameId;
             opponentSocket.gameId = gameId;
 
-            console.log(`Starting public game ${gameId} between ${opponentSocketId} and ${socket.id}`);
+            console.log(`Starting public game ${gameId} on map ${map} between ${opponentSocketId} and ${socket.id}`);
             startGame(game);
+            broadcastPlayerCounts();
         } else {
-            // Opponent disconnected before match, put current player in queue
-            publicGameQueue.push(socket.id);
+            // Opponent disconnected before match, put current player in queue for this map
+            publicGameQueues[map].push(socket.id);
+            // Recursively search, in case another player was also waiting
+            searchForPublicGame(socket, map);
         }
     } else {
-        // No match found, add to queue
-        publicGameQueue.push(socket.id);
+        // No match found for this map, add to queue
+        publicGameQueues[map].push(socket.id);
     }
 }
 
