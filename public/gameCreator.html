@@ -25,7 +25,7 @@
             border-radius: 10px;
             border: 4px solid black;
         }
-        #container button, #container select {
+        #container button, #container select, #container input[type="file"] {
             height: 60px;
             width: 400px;
             font-size: 20px;
@@ -49,21 +49,90 @@
             border-radius: 5px;
             border: 2px dashed #ccc;
         }
+        .upload-section {
+            border: 2px dashed #ccc;
+            padding: 20px;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            margin: 10px 0;
+        }
+        .file-input-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+            width: 100%;
+        }
+        .file-input-wrapper input[type=file] {
+            position: absolute;
+            left: -9999px;
+        }
+        .file-input-label {
+            display: block;
+            padding: 15px;
+            background: #fff;
+            border: 2px solid #000;
+            border-radius: 5px;
+            cursor: pointer;
+            text-align: center;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        .file-input-label:hover {
+            background-color: #f0f0f0;
+        }
+        .upload-status {
+            margin-top: 10px;
+            font-weight: bold;
+        }
+        .success {
+            color: green;
+        }
+        .error {
+            color: red;
+        }
+        .loading {
+            color: orange;
+        }
+        .map-preview {
+            margin-top: 10px;
+            padding: 10px;
+            background: #f0f0f0;
+            border-radius: 5px;
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
     <div id="container">
         <div id="setup-container">
             <h2>Create a New Game</h2>
-            <div class="form-group">
-                <label for="map-select"><h3>Choose a Map:</h3></label>
-                <select id="map-select">
-                    <!-- Maps will be loaded here -->
-                </select>
+
+            <div class="form-group" style="text-align: left; padding-left: 20px;">
+                <h3>Game Type:</h3>
+                <label><input type="radio" name="gameType" value="private" checked> Private (Share a code)</label><br>
+                <label><input type="radio" name="gameType" value="public"> Public Match</label>
             </div>
+
+            <div id="map-options-container">
+                <div class="form-group">
+                    <label for="map-select"><h3>Choose a Map:</h3></label>
+                    <select id="map-select"></select>
+                </div>
+                <div class="upload-section">
+                    <h3>Or Upload Your Own Map:</h3>
+                    <div class="file-input-wrapper">
+                        <input type="file" id="map-upload" accept=".json" />
+                        <label for="map-upload" class="file-input-label">Choose Map File (.json)</label>
+                    </div>
+                    <div id="upload-status" class="upload-status"></div>
+                    <div id="map-preview" class="map-preview" style="display: none;"></div>
+                </div>
+            </div>
+
             <button id="create-game-btn">Create Game</button>
             <button id="back-btn">Back to Home</button>
         </div>
+        
         <div id="game-code-container">
             <h2>Game Created!</h2>
             <p>Share this code with a friend to join:</p>
@@ -72,16 +141,31 @@
         </div>
     </div>
 
+    <div id="waiting-message" style="display: none;">
+        <h2>Searching for an opponent...</h2>
+        <p>Please wait while we find another player.</p>
+    </div>
+
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const mapSelect = document.getElementById('map-select');
+        const mapUpload = document.getElementById('map-upload');
         const createGameBtn = document.getElementById('create-game-btn');
         const backBtn = document.getElementById('back-btn');
         const setupContainer = document.getElementById('setup-container');
         const gameCodeContainer = document.getElementById('game-code-container');
         const gameCodeDisplay = document.getElementById('game-code');
+        const uploadStatus = document.getElementById('upload-status');
+        const mapPreview = document.getElementById('map-preview');
+        const gameTypeRadios = document.querySelectorAll('input[name="gameType"]');
+        const mapOptionsContainer = document.getElementById('map-options-container');
+        const waitingMessage = document.getElementById('waiting-message');
+        const socket = io();
+        
+        let uploadedMapData = null;
+        let uploadedMapName = null;
 
-        // Fetch and populate maps
+        // Fetch and populate existing maps
         fetch('/maps')
             .then(response => response.json())
             .then(maps => {
@@ -91,28 +175,202 @@
                     option.textContent = mapFile.replace('.json', '');
                     mapSelect.appendChild(option);
                 });
+            })
+            .catch(err => {
+                console.error('Failed to load maps:', err);
+                uploadStatus.textContent = 'Failed to load existing maps';
+                uploadStatus.className = 'upload-status error';
             });
 
+        // Handle map file upload
+        mapUpload.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) {
+                resetUploadState();
+                return;
+            }
+
+            if (file.type !== 'application/json') {
+                showUploadStatus('Please select a valid .json map file', 'error');
+                resetUploadState();
+                return;
+            }
+
+            showUploadStatus('Reading map file...', 'loading');
+            
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                try {
+                    const mapData = JSON.parse(event.target.result);
+                    
+                    // Validate map data structure
+                    if (!validateMapData(mapData)) {
+                        showUploadStatus('Invalid map format. Please check your map file.', 'error');
+                        resetUploadState();
+                        return;
+                    }
+                    
+                    // Store the uploaded map data
+                    uploadedMapData = mapData;
+                    uploadedMapName = file.name.replace('.json', '');
+                    
+                    showUploadStatus(`Map "${uploadedMapName}" loaded successfully!`, 'success');
+                    showMapPreview(mapData);
+                    
+                    // Clear selection from dropdown when custom map is uploaded
+                    mapSelect.selectedIndex = -1;
+                    
+                } catch (error) {
+                    console.error('Error parsing map file:', error);
+                    showUploadStatus('Error reading map file. Please check the file format.', 'error');
+                    resetUploadState();
+                }
+            };
+            
+            reader.onerror = function() {
+                showUploadStatus('Error reading file', 'error');
+                resetUploadState();
+            };
+            
+            reader.readAsText(file);
+        });
+
+        // Validate map data structure
+        function validateMapData(mapData) {
+            // Check required properties
+            if (!mapData.cities || !Array.isArray(mapData.cities)) {
+                return false;
+            }
+            
+            // Check if cities have required properties
+            for (let city of mapData.cities) {
+                if (typeof city.x !== 'number' || typeof city.y !== 'number' || !city.team) {
+                    return false;
+                }
+            }
+            
+            // Optional: validate units if present
+            if (mapData.units && Array.isArray(mapData.units)) {
+                for (let unit of mapData.units) {
+                    if (typeof unit.x !== 'number' || typeof unit.y !== 'number' || !unit.team) {
+                        return false;
+                    }
+                }
+            }
+            
+            // Optional: validate territory grid if present
+            if (mapData.territoryGrid && Array.isArray(mapData.territoryGrid)) {
+                for (let row of mapData.territoryGrid) {
+                    if (!Array.isArray(row)) {
+                        return false;
+                    }
+                }
+            }
+            
+            return true;
+        }
+
+        // Show map preview information
+        function showMapPreview(mapData) {
+            const redCities = mapData.cities.filter(c => c.team === 'red').length;
+            const blueCities = mapData.cities.filter(c => c.team === 'blue').length;
+            const units = mapData.units ? mapData.units.length : 0;
+            const hasTerritory = mapData.territoryGrid ? 'Yes' : 'No';
+            
+            mapPreview.innerHTML = `
+                <strong>Map Preview:</strong><br>
+                Red Cities: ${redCities} | Blue Cities: ${blueCities}<br>
+                Pre-placed Units: ${units}<br>
+                Custom Territory: ${hasTerritory}
+            `;
+            mapPreview.style.display = 'block';
+        }
+
+        // Show upload status
+        function showUploadStatus(message, type) {
+            uploadStatus.textContent = message;
+            uploadStatus.className = `upload-status ${type}`;
+        }
+
+        // Reset upload state
+        function resetUploadState() {
+            uploadedMapData = null;
+            uploadedMapName = null;
+            mapPreview.style.display = 'none';
+            uploadStatus.textContent = '';
+        }
+
+        // Handle dropdown selection change
+        mapSelect.addEventListener('change', function() {
+            if (mapSelect.value) {
+                // Clear uploaded map when selecting from dropdown
+                resetUploadState();
+                mapUpload.value = '';
+            }
+        });
+
+        // Back button
         backBtn.addEventListener('click', () => {
             window.location.href = '/';
         });
 
+        // Create game button
         createGameBtn.addEventListener('click', () => {
-            const selectedMap = mapSelect.value;
-            const socket = io();
+            const selectedGameType = document.querySelector('input[name="gameType"]:checked').value;
 
-            socket.emit('createGame', { map: selectedMap });
+            if (selectedGameType === 'public') {
+                // --- Public Game Flow ---
+                const selectedMap = mapSelect.value;
+                if (!selectedMap) {
+                    alert('Please select a map for the public match.');
+                    return;
+                }
 
-            socket.on('gameCreated', (data) => {
-                setupContainer.style.display = 'none';
-                gameCodeContainer.style.display = 'block';
-                gameCodeDisplay.textContent = data.gameId;
-            });
+                document.getElementById('container').style.display = 'none';
+                waitingMessage.style.display = 'block';
+                socket.emit('findGame', { map: selectedMap });
+            } else {
+                // --- Private Game Flow ---
+                let selectedMap;
+                let isCustomMap = false;
+
+                if (uploadedMapData) {
+                    selectedMap = uploadedMapData;
+                    isCustomMap = true;
+                } else if (mapSelect.value) {
+                    selectedMap = mapSelect.value;
+                } else {
+                    alert('Please select a map or upload a custom map file.');
+                    return;
+                }
+
+                if (isCustomMap) {
+                    socket.emit('createGame', { 
+                        mapData: selectedMap,
+                        mapName: uploadedMapName || 'custom_map'
+                    });
+                } else {
+                    socket.emit('createGame', { map: selectedMap });
+                }
+
+                socket.on('gameCreated', (data) => {
+                    setupContainer.style.display = 'none';
+                    gameCodeContainer.style.display = 'block';
+                    gameCodeDisplay.textContent = data.gameId;
+                });
+            }
 
             socket.on('gameReady', (data) => {
-                window.location.href = `/gamepage?sid=${data.socketId}`; // Navigate with the temp socket ID
+                window.location.href = `/gamepage?sid=${data.socketId}`;
+            });
+            
+            socket.on('connect_error', (err) => {
+                console.error('Connection error:', err);
+                alert('Failed to connect to server. Please try again.');
+                window.location.reload();
             });
         });
+
     </script>
 </body>
 </html>
