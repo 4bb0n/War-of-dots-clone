@@ -35,6 +35,10 @@ app.get('/maps', (req, res) => {
 let publicGameQueue = []; // Holds socket IDs of players waiting for a public game
 const activeGames = {}; // Holds all active games, keyed by a unique game ID
 
+let playerCount = 0;
+let playingCount = 0;
+let waitingCount = 0;
+
 function generateGameId() {
     return Math.floor(1000 + Math.random() * 9000).toString();
 }
@@ -290,6 +294,9 @@ function handleTerritoryEncirclement(game) {
     // For each team, find connected territory regions
     handleTeamEncirclement(game, allUnits, 'red', 1);
     handleTeamEncirclement(game, allUnits, 'blue', 2);
+    
+    // Handle attrition for encircled units
+    handleEncircledUnitAttrition(game, allUnits);
 }
 
 function handleTeamEncirclement(game, allUnits, teamName, teamValue) {
@@ -318,18 +325,157 @@ function handleTeamEncirclement(game, allUnits, teamName, teamValue) {
         floodFillConnected(game, unitGridX, unitGridY, teamValue, connectedCells);
     });
     
-    // Any team territory not in connectedCells is encircled - convert it to enemy
-    const enemyTeamValue = teamValue === 1 ? 2 : 1;
-    
+    // Find which cells are encircled (not connected to main territory)
+    const encircledCells = [];
     teamCells.forEach(cell => {
         const cellKey = `${cell.x},${cell.y}`;
         if (!connectedCells.has(cellKey)) {
-            // This territory is encircled - convert to enemy control
+            encircledCells.push(cell);
+        }
+    });
+    
+    // NEW: Only convert encircled territory if no friendly units are present
+    const enemyTeamValue = teamValue === 1 ? 2 : 1;
+    
+    encircledCells.forEach(cell => {
+        // Check if any friendly units are in this territory cell
+        const cellWorldX = cell.x * game.GRID_SIZE + game.GRID_SIZE / 2;
+        const cellWorldY = cell.y * game.GRID_SIZE + game.GRID_SIZE / 2;
+        
+        const hasDefendingUnit = teamUnits.some(unit => {
+            const unitGridX = Math.floor(unit.x / game.GRID_SIZE);
+            const unitGridY = Math.floor(unit.y / game.GRID_SIZE);
+            return unitGridX === cell.x && unitGridY === cell.y;
+        });
+        
+        // Only convert territory to enemy if no friendly units are defending it
+        if (!hasDefendingUnit) {
             game.territoryGrid[cell.y][cell.x] = enemyTeamValue;
         }
     });
 }
 
+function handleEncircledUnitAttrition(game, allUnits) {
+    const ATTRITION_DAMAGE = 2; // Health lost per tick when cut off from supply
+    const ATTRITION_CHECK_RADIUS = 100; // How far to check for supply connection
+    
+    allUnits.forEach(unit => {
+        // Check if unit has a path to any friendly city (supply line)
+        const hasSupplyLine = checkSupplyLineToCity(game, unit);
+        
+        if (!hasSupplyLine) {
+            // Unit is cut off from supply - apply attrition
+            unit.health -= ATTRITION_DAMAGE;
+            
+            // Mark unit as cut off for visual indicator
+            unit.isCutOff = true;
+            unit.cutOffTimer = 60; // Visual effect duration
+            
+            // Unit dies if health drops too low
+            if (unit.health <= 0) {
+                unit.isDead = true;
+            }
+        } else {
+            // Unit has supply line - remove cut off status
+            unit.isCutOff = false;
+            unit.cutOffTimer = 0;
+        }
+    });
+}
+
+function checkSupplyLineToCity(game, unit) {
+    const friendlyCities = [...game.redCities, ...game.blueCities].filter(city => city.team === unit.team);
+    
+    if (friendlyCities.length === 0) return false; // No friendly cities
+    
+    // Check if unit can reach any friendly city through connected friendly territory
+    for (const city of friendlyCities) {
+        if (hasConnectedPathToCity(game, unit, city)) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+function hasConnectedPathToCity(game, unit, city) {
+    const unitGridX = Math.floor(unit.x / game.GRID_SIZE);
+    const unitGridY = Math.floor(unit.y / game.GRID_SIZE);
+    const cityGridX = Math.floor(city.x / game.GRID_SIZE);
+    const cityGridY = Math.floor(city.y / game.GRID_SIZE);
+    
+    const teamValue = unit.team === 'red' ? 1 : 2;
+    
+    // Use flood fill to see if unit position connects to city position through friendly territory
+    const visited = new Set();
+    const queue = [{ x: unitGridX, y: unitGridY }];
+    
+    while (queue.length > 0) {
+        const current = queue.shift();
+        const cellKey = `${current.x},${current.y}`;
+        
+        // Skip if already visited or out of bounds
+        if (visited.has(cellKey) || 
+            current.x < 0 || current.x >= game.GRID_WIDTH ||
+            current.y < 0 || current.y >= game.GRID_HEIGHT) {
+            continue;
+        }
+        
+        visited.add(cellKey);
+        
+        // Found path to city!
+        if (current.x === cityGridX && current.y === cityGridY) {
+            return true;
+        }
+        
+        // Skip if this cell doesn't belong to our team (can't travel through enemy territory)
+        if (game.territoryGrid[current.y][current.x] !== teamValue) {
+            continue;
+        }
+        
+        // Add adjacent cells to queue (4-directional movement)
+        queue.push({ x: current.x + 1, y: current.y });
+        queue.push({ x: current.x - 1, y: current.y });
+        queue.push({ x: current.x, y: current.y + 1 });
+        queue.push({ x: current.x, y: current.y - 1 });
+    }
+    
+    return false; // No connected path found
+}
+
+// Enhanced floodFillConnected function (same as before but with better comments)
+function floodFillConnected(game, startX, startY, teamValue, connectedCells) {
+    const queue = [{ x: startX, y: startY }];
+    const visited = new Set();
+    
+    while (queue.length > 0) {
+        const current = queue.shift();
+        const cellKey = `${current.x},${current.y}`;
+        
+        // Skip if already visited or out of bounds
+        if (visited.has(cellKey) || 
+            current.x < 0 || current.x >= game.GRID_WIDTH ||
+            current.y < 0 || current.y >= game.GRID_HEIGHT) {
+            continue;
+        }
+        
+        visited.add(cellKey);
+        
+        // Skip if this cell doesn't belong to our team
+        if (game.territoryGrid[current.y][current.x] !== teamValue) {
+            continue;
+        }
+        
+        // Mark this cell as connected
+        connectedCells.add(cellKey);
+        
+        // Add adjacent cells to queue (4-directional connectivity)
+        queue.push({ x: current.x + 1, y: current.y });
+        queue.push({ x: current.x - 1, y: current.y });
+        queue.push({ x: current.x, y: current.y + 1 });
+        queue.push({ x: current.x, y: current.y - 1 });
+    }
+}
 function floodFillConnected(game, startX, startY, teamValue, connectedCells) {
     const queue = [{ x: startX, y: startY }];
     const visited = new Set();
@@ -489,6 +635,21 @@ function checkCityCaptures(game) {
                 city.captureEffectTimer = 60; // Show capture effect for 60 frames
             }
         }
+        // check if a team captured over 70% of cities, if so, they win
+        const totalCities = game.redCities.length + game.blueCities.length;
+        if (game.redCities.length / totalCities > 0.7) {
+            io.to(game.teamRed).emit('gameComplete', { win: true });
+            io.to(game.teamBlue).emit('gameComplete', { win: false });
+            game.canDelete = true;
+            delete activeGames[game.id];
+            console.log(`Game ${game.id} ended. Red team wins by city capture!`);
+        } else if (game.blueCities.length / totalCities > 0.7) {
+            io.to(game.teamBlue).emit('gameComplete', { win: true });
+            io.to(game.teamRed).emit('gameComplete', { win: false });
+            game.canDelete = true;
+            delete activeGames[game.id];
+            console.log(`Game ${game.id} ended. Blue team wins by city capture!`);
+        }
     });
 }
 
@@ -509,40 +670,142 @@ function updateCityEffects(game) {
 // --- Socket.IO Connection Handling ---
 io.on('connection', (socket) => {
     console.log('a player connected:', socket.id);
+    playerCount++;
 
     socket.on('findGame', () => {
         console.log(`Player ${socket.id} is searching for a public game.`);
+        waitingCount++;
         searchForPublicGame(socket);
     });
 
     socket.on('createGame', (options) => {
-        const gameId = generateGameId();
-        const game = new Game(socket.id);
-        game.id = gameId;
+    const gameId = generateGameId();
+    const game = new Game(socket.id);
+    game.id = gameId;
+    
+    if (options.mapData) {
+        // Custom uploaded map
+        game.customMapData = options.mapData;
+        game.map = options.mapName || 'custom_map';
+        console.log(`Game ${gameId} created with custom uploaded map: ${game.map}`);
+    } else {
+        // Existing map file
         game.map = options.map || 'default.json';
-        activeGames[gameId] = game;
+        console.log(`Game ${gameId} created with existing map: ${game.map}`);
+    }
+    
+    activeGames[gameId] = game;
+    socket.join(gameId);
+    socket.gameId = gameId;
+    
+    socket.emit('gameCreated', { gameId });
+});
 
-        socket.join(gameId);
-        socket.gameId = gameId; // Associate gameId with the socket
-        console.log(`Player ${socket.id} created game ${gameId} with map ${game.map}`);
-        socket.emit('gameCreated', { gameId });
-    });
+// Update your startGame function to handle custom uploaded maps:
+function startGame(game) {
+    // Reset/clear any previous game state
+    game.redUnits = [];
+    game.blueUnits = [];
+    game.redCities = [];
+    game.blueCities = [];
+    game.territoryGrid = null;
 
-    socket.on('joinGame', (gameId) => {
-        const game = activeGames[gameId];
-        if (game && game.teamBlue === null) {
-            game.joinGame(socket.id);
-            socket.join(gameId);
-            socket.gameId = gameId; // Associate gameId with the socket
-            console.log(`Player ${socket.id} joined game ${gameId}`);
-            startGame(game);
-        } else {
-            socket.emit('joinError', 'Game not found or is full.');
+    game.borderPoints = [];
+    const BORDER_RESOLUTION = 15;
+    for (let y = 0; y <= 600; y += BORDER_RESOLUTION) {
+        game.borderPoints.push({ x: 500, y: y, targetX: 500 });
+    }
+    
+    let gameMapData;
+    
+    if (game.customMapData) {
+        // Use the uploaded custom map data
+        gameMapData = game.customMapData;
+        console.log(`Using custom uploaded map data for game ${game.id}`);
+    } else {
+        // Load from file system
+        try {
+            const mapData = fs.readFileSync(game.map || 'default.json', 'utf8');
+            gameMapData = JSON.parse(mapData);
+            console.log(`Map '${game.map}' loaded from file for game ${game.id}.`);
+        } catch (err) {
+            console.error(`Could not load map '${game.map}'. Using default setup.`, err);
+            gameMapData = null;
         }
-    });
+    }
+
+    if (gameMapData) {
+        // Load from map data (either uploaded or from file)
+        gameMapData.cities.forEach(cityData => {
+            const newCity = new City(cityData.x, cityData.y, cityData.team);
+            if (cityData.team === 'red') game.redCities.push(newCity);
+            else game.blueCities.push(newCity);
+        });
+
+        if (gameMapData.units) {
+            gameMapData.units.forEach(unitData => {
+                const newUnit = new Unit(unitData.x, unitData.y, unitData.team, unitData.type);
+                if (unitData.team === 'red') game.redUnits.push(newUnit);
+                else game.blueUnits.push(newUnit);
+            });
+        }
+
+        if (gameMapData.territoryGrid) {
+            game.territoryGrid = gameMapData.territoryGrid.map(row => [...row]);
+        } else {
+            game.territoryGrid = null;
+        }
+        
+        game.GRID_SIZE = 20;
+        game.GRID_WIDTH = 1000 / 20;
+        game.GRID_HEIGHT = 600 / 20;
+    } else {
+        // Fallback to default setup
+        console.log("Using default game setup.");
+        game.blueCities = [new City(900, 100, "blue"), new City(900, 300, "blue"), new City(900, 500, "blue")];
+        game.redCities = [new City(50, 100, "red"), new City(50, 300, "red"), new City(50, 500, "red")];
+        game.territoryGrid = null;
+    }
+
+    // Set canDelete flag after 3 seconds
+    setTimeout(() => {
+        game.canDelete = true;
+    }, 3000);
+
+    // Tell clients to navigate to game page
+    io.to(game.teamRed).emit('gameReady', { socketId: game.teamRed });
+    io.to(game.teamBlue).emit('gameReady', { socketId: game.teamBlue });
+    
+    // Start the game
+    game.startGame();
+    
+    // Send the actual game data to both players
+    const initialGameState = {
+        units: [...game.redUnits, ...game.blueUnits],
+        cities: [...game.redCities, ...game.blueCities],
+        border: game.borderPoints
+    };
+    
+    console.log(`Sending gameStart to both players in game ${game.id}`);
+    
+    // Get the actual socket objects and emit directly to them
+    const redSocket = io.sockets.sockets.get(game.teamRed);
+    const blueSocket = io.sockets.sockets.get(game.teamBlue);
+    
+    if (redSocket) {
+        redSocket.emit('gameStart', { team: 'red', ...initialGameState });
+        console.log('gameStart sent to red player');
+    }
+    
+    if (blueSocket) {
+        blueSocket.emit('gameStart', { team: 'blue', ...initialGameState });
+        console.log('gameStart sent to blue player');
+    }
+}   
 
     socket.on('disconnect', () => {
         console.log('a player disconnected:', socket.id);
+        playerCount--;
 
         // If player was in the public queue, remove them
         publicGameQueue = publicGameQueue.filter(id => id !== socket.id);
@@ -554,6 +817,7 @@ io.on('connection', (socket) => {
             const opponentId = game.teamRed === socket.id ? game.teamBlue : game.teamRed;
             if (opponentId) {
                 io.to(opponentId).emit('gameComplete', { win: true });
+                playingCount--;
             }
             console.log(`Game ${gameId} ended due to disconnect.`);
             delete activeGames[gameId];
@@ -613,7 +877,24 @@ io.on('connection', (socket) => {
             }
         }
     });
+    socket.on('joinGame', (gameId) => {
+    console.log(`Player ${socket.id} attempting to join game ${gameId}`);
+    console.log(`Available games:`, Object.keys(activeGames));
+    
+    const game = activeGames[gameId];
+    if (game && game.teamBlue === null) {
+        game.joinGame(socket.id);
+        socket.join(gameId);
+        socket.gameId = gameId;
+        console.log(`Player ${socket.id} joined game ${gameId}`);
+        startGame(game);
+    } else {
+        console.log(`Join failed - Game: ${game ? 'found' : 'not found'}, Blue slot: ${game ? (game.teamBlue ? 'occupied' : 'free') : 'N/A'}`);
+        socket.emit('joinError', 'Game not found or is full.');
+    }
 });
+});
+
 
 // --- Game Logic Functions ---
 function searchForPublicGame(socket) {
@@ -621,6 +902,8 @@ function searchForPublicGame(socket) {
         // Match found
         const opponentSocketId = publicGameQueue.shift();
         const opponentSocket = io.sockets.sockets.get(opponentSocketId);
+        waitingCount--;
+        playingCount += 2;
 
         if (opponentSocket) {
             const gameId = generateGameId();
@@ -647,12 +930,12 @@ function searchForPublicGame(socket) {
 }
 
 function startGame(game) {
-    // IMPORTANT: Reset/clear any previous game state
+    // Reset/clear any previous game state
     game.redUnits = [];
     game.blueUnits = [];
     game.redCities = [];
     game.blueCities = [];
-    game.territoryGrid = null; // Force territory grid to be reinitialized
+    game.territoryGrid = null;
 
     game.borderPoints = [];
     const BORDER_RESOLUTION = 15;
@@ -660,19 +943,26 @@ function startGame(game) {
         game.borderPoints.push({ x: 500, y: y, targetX: 500 });
     }
     
-    let mapToLoad = game.map || 'default.json';
     let gameMapData;
-    try {
-        const mapData = fs.readFileSync(mapToLoad, 'utf8');
-        gameMapData = JSON.parse(mapData);
-        console.log(`Map '${mapToLoad}' loaded for game ${game.id}.`);
-    } catch (err) {
-        console.error(`Could not load map '${mapToLoad}'. Using default setup.`, err);
-        gameMapData = null;
+    
+    if (game.customMapData) {
+        // Use the uploaded custom map data
+        gameMapData = game.customMapData;
+        console.log(`Using custom uploaded map data for game ${game.id}`);
+    } else {
+        // Load from file system
+        try {
+            const mapData = fs.readFileSync(game.map || 'default.json', 'utf8');
+            gameMapData = JSON.parse(mapData);
+            console.log(`Map '${game.map}' loaded from file for game ${game.id}.`);
+        } catch (err) {
+            console.error(`Could not load map '${game.map}'. Using default setup.`, err);
+            gameMapData = null;
+        }
     }
 
     if (gameMapData) {
-        // Load from map file
+        // Load from map data (either uploaded or from file)
         gameMapData.cities.forEach(cityData => {
             const newCity = new City(cityData.x, cityData.y, cityData.team);
             if (cityData.team === 'red') game.redCities.push(newCity);
@@ -704,13 +994,19 @@ function startGame(game) {
         game.territoryGrid = null;
     }
 
-        io.to(game.teamRed).emit('gameReady', { socketId: game.teamRed });
+    // Set canDelete flag after 3 seconds
+    setTimeout(() => {
+        game.canDelete = true;
+    }, 3000);
+
+    // Tell clients to navigate to game page
+    io.to(game.teamRed).emit('gameReady', { socketId: game.teamRed });
     io.to(game.teamBlue).emit('gameReady', { socketId: game.teamBlue });
     
     // Start the game
     game.startGame();
     
-    // CRITICAL FIX: Send gameStart to individual sockets, not rooms
+    // Send the actual game data to both players
     const initialGameState = {
         units: [...game.redUnits, ...game.blueUnits],
         cities: [...game.redCities, ...game.blueCities],
@@ -718,8 +1014,6 @@ function startGame(game) {
     };
     
     console.log(`Sending gameStart to both players in game ${game.id}`);
-    console.log(`Red player socket: ${game.teamRed}`);
-    console.log(`Blue player socket: ${game.teamBlue}`);
     
     // Get the actual socket objects and emit directly to them
     const redSocket = io.sockets.sockets.get(game.teamRed);
@@ -728,15 +1022,11 @@ function startGame(game) {
     if (redSocket) {
         redSocket.emit('gameStart', { team: 'red', ...initialGameState });
         console.log('gameStart sent to red player');
-    } else {
-        console.error('Red player socket not found!');
     }
     
     if (blueSocket) {
         blueSocket.emit('gameStart', { team: 'blue', ...initialGameState });
         console.log('gameStart sent to blue player');
-    } else {
-        console.error('Blue player socket not found!');
     }
 }
 server.listen(port, () => {
