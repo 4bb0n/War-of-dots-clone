@@ -9,7 +9,9 @@ let cities = [];
 let border = [];
 let currentPath = [];
 let territoryGrid = null;
-
+let allBoundaries = []; // To store all boundary data for pockets
+let visibilityGrid = null; // For Fog of War
+const GRID_SIZE = 20; // Must match server's GRID_SIZE
 // Set canvas size to fill the window and prevent blurriness
 function resizeCanvas() {
     // Get the actual displayed size of the canvas
@@ -32,20 +34,11 @@ socket.on("gameComplete", (data) => {
     console.log("Game complete event received:", data);
     units = [];
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const message = ""
-    if (data.win){
-        message = "You win!"
-        setTimeout(() => {
-            window.location.href = "/";
-        }, 4000);
-    }
-    else {
-        message = "You lose."
-        setTimeout(() => {
-            window.location.href = "/";
-        }, 4000);
-    }
+    const message = data.win ? "You win!" : "You lose.";
     alert(`Game complete! ${message}`);
+    setTimeout(() => {
+        window.location.href = "/";
+    }, 4000);
 })
 
 socket.on("gameStart", data => {
@@ -101,140 +94,6 @@ socket.on('gameStateUpdate', (gameState) => {
 
 let isLooping = false;
 
-function drawUnit(unit) {
-    if (unit.isDead) return;
-    const displayX = unit.x + (unit.shakeX || 0);
-    const displayY = unit.y + (unit.shakeY || 0);
-    
-    ctx.beginPath();
-    ctx.arc(displayX, displayY, unit.radius, 0, Math.PI * 2);
-    ctx.fillStyle = unit.team;
-    ctx.fill();
-    
-    // Draw thicker border for tanks
-    if (unit.type === "tank") {
-        ctx.strokeStyle = unit.team === 'red' ? 'darkred' : 'darkblue';
-        ctx.lineWidth = 3;
-        ctx.stroke();
-    }
-    
-    ctx.closePath();
-
-    // Draw selection indicator
-    const isSelected = selectedUnits.some(selected => selected.id === unit.id);
-    if (isSelected) {
-        ctx.beginPath();
-        ctx.arc(displayX, displayY, unit.radius + 4, 0, Math.PI * 2);
-        ctx.strokeStyle = 'gold';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.closePath();
-    }
-    
-    // Draw fighting indicator
-    if (unit.isFighting) {
-        ctx.beginPath();
-        ctx.arc(displayX, displayY, unit.radius + 8, 0, Math.PI * 2);
-        ctx.strokeStyle = 'red';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([3, 3]); // Dashed line
-        ctx.stroke();
-        ctx.setLineDash([]); // Reset line dash
-        ctx.closePath();
-    }
-    
-    // Draw health bar
-    if (unit.health !== undefined) {
-        const maxHealth = unit.type === "tank" ? 3000 : 1000; // Based on game.js unit types
-        const healthPercentage = Math.max(0, unit.health / maxHealth);
-        
-        const barWidth = unit.radius * 2;
-        const barHeight = 4;
-        const barX = displayX - barWidth / 2;
-        const barY = displayY - unit.radius - 8;
-        
-        // Background bar (red)
-        ctx.fillStyle = 'red';
-        ctx.fillRect(barX, barY, barWidth, barHeight);
-        
-        // Health bar (green)
-        ctx.fillStyle = 'green';
-        ctx.fillRect(barX, barY, barWidth * healthPercentage, barHeight);
-        
-        // Border around health bar
-        ctx.strokeStyle = 'black';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(barX, barY, barWidth, barHeight);
-    }
-}
-
-// Update the drawCity function in main.js to show capture effects:
-
-function drawCity(city) {
-    const now = Date.now();
-    
-    // Base city drawing
-    ctx.globalAlpha = 0.6;
-    ctx.beginPath();
-    ctx.arc(city.x, city.y, city.radius, 0, Math.PI * 2);
-    ctx.fillStyle = city.team;
-    ctx.fill();
-    ctx.closePath();
-    ctx.globalAlpha = 1;
-    
-    // Draw city border
-    ctx.beginPath();
-    ctx.arc(city.x, city.y, city.radius, 0, Math.PI * 2);
-    ctx.strokeStyle = city.team === 'red' ? 'darkred' : 'darkblue';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.closePath();
-    
-    // Draw capture effect if city was just captured
-    if (city.justCaptured && city.captureEffectTimer > 0) {
-        const effectIntensity = city.captureEffectTimer / 60; // Fade out over 60 frames
-        
-        // Pulsing capture ring
-        const pulseSize = city.radius + 10 + Math.sin(now * 0.02) * 5;
-        ctx.beginPath();
-        ctx.arc(city.x, city.y, pulseSize, 0, Math.PI * 2);
-        ctx.strokeStyle = city.team === 'red' ? `rgba(255, 100, 100, ${effectIntensity})` : `rgba(100, 100, 255, ${effectIntensity})`;
-        ctx.lineWidth = 3;
-        ctx.setLineDash([4, 4]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.closePath();
-        
-        // Inner glow effect
-        const gradient = ctx.createRadialGradient(city.x, city.y, 0, city.x, city.y, city.radius + 15);
-        gradient.addColorStop(0, city.team === 'red' ? `rgba(255, 150, 150, ${effectIntensity * 0.3})` : `rgba(150, 150, 255, ${effectIntensity * 0.3})`);
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        
-        ctx.beginPath();
-        ctx.arc(city.x, city.y, city.radius + 15, 0, Math.PI * 2);
-        ctx.fillStyle = gradient;
-        ctx.fill();
-        ctx.closePath();
-    }
-    
-    // Draw production indicator (small dots showing spawn progress)
-    const spawnProgress = 1 - (city.spawnInterval / 1000);
-    if (spawnProgress > 0.1) {
-        const indicatorAngle = spawnProgress * Math.PI * 2 - Math.PI / 2; // Start from top
-        const indicatorX = city.x + Math.cos(indicatorAngle) * (city.radius + 5);
-        const indicatorY = city.y + Math.sin(indicatorAngle) * (city.radius + 5);
-        
-        ctx.beginPath();
-        ctx.arc(indicatorX, indicatorY, 2, 0, Math.PI * 2);
-        ctx.fillStyle = city.team === 'red' ? 'rgba(255, 200, 200, 0.8)' : 'rgba(200, 200, 255, 0.8)';
-        ctx.fill();
-        ctx.closePath();
-    }
-    
-    // Draw capture zone indicator when units are nearby
-    drawCityCapturZone(city);
-}
-
 function drawCityCapturZone(city) {
     // Check if any units are near this city
     const nearbyUnits = units.filter(unit => {
@@ -288,6 +147,113 @@ function drawCityCapturZone(city) {
     }
 }
 
+function drawCity(city) {
+    const now = Date.now();
+    
+    // Base city drawing is always done
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath();
+    ctx.arc(city.x, city.y, city.radius, 0, Math.PI * 2);
+    ctx.fillStyle = city.team;
+    ctx.fill();
+    ctx.closePath();
+    ctx.globalAlpha = 1;
+    
+    // Draw city border
+    ctx.beginPath();
+    ctx.arc(city.x, city.y, city.radius, 0, Math.PI * 2);
+    ctx.strokeStyle = city.team === 'red' ? 'darkred' : 'darkblue';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.closePath();
+
+    // FOG OF WAR CHECK for effects
+    const gridX = Math.floor(city.x / GRID_SIZE);
+    const gridY = Math.floor(city.y / GRID_SIZE);
+    const isVisible = visibilityGrid && visibilityGrid[gridY] && visibilityGrid[gridY][gridX];
+
+    if (!isVisible) return; // Don't draw effects if city is in fog
+    
+    // Draw capture effect if city was just captured
+    if (city.justCaptured && city.captureEffectTimer > 0) {
+        const effectIntensity = city.captureEffectTimer / 60; // Fade out over 60 frames
+        
+        // Pulsing capture ring
+        const pulseSize = city.radius + 10 + Math.sin(now * 0.02) * 5;
+        ctx.beginPath();
+        ctx.arc(city.x, city.y, pulseSize, 0, Math.PI * 2);
+        ctx.strokeStyle = city.team === 'red' ? `rgba(255, 100, 100, ${effectIntensity})` : `rgba(100, 100, 255, ${effectIntensity})`;
+        ctx.lineWidth = 3;
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.closePath();
+        
+        // Inner glow effect
+        const gradient = ctx.createRadialGradient(city.x, city.y, 0, city.x, city.y, city.radius + 15);
+        gradient.addColorStop(0, city.team === 'red' ? `rgba(255, 150, 150, ${effectIntensity * 0.3})` : `rgba(150, 150, 255, ${effectIntensity * 0.3})`);
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        
+        ctx.beginPath();
+        ctx.arc(city.x, city.y, city.radius + 15, 0, Math.PI * 2);
+        ctx.fillStyle = gradient;
+        ctx.fill();
+        ctx.closePath();
+    }
+    
+    // Draw production indicator (small dots showing spawn progress)
+    const spawnProgress = 1 - (city.spawnInterval / 1000);
+    if (spawnProgress > 0.1) {
+        const indicatorAngle = spawnProgress * Math.PI * 2 - Math.PI / 2; // Start from top
+        const indicatorX = city.x + Math.cos(indicatorAngle) * (city.radius + 5);
+        const indicatorY = city.y + Math.sin(indicatorAngle) * (city.radius + 5);
+        
+        ctx.beginPath();
+        ctx.arc(indicatorX, indicatorY, 2, 0, Math.PI * 2);
+        ctx.fillStyle = city.team === 'red' ? 'rgba(255, 200, 200, 0.8)' : 'rgba(200, 200, 255, 0.8)';
+        ctx.fill();
+        ctx.closePath();
+    }
+    
+    // Draw capture zone indicator when units are nearby
+    drawCityCapturZone(city);
+}
+
+function calculateVisibilityGrid() {
+    if (!territoryGrid) return;
+
+    const GRID_WIDTH = territoryGrid[0].length;
+    const GRID_HEIGHT = territoryGrid.length;
+    const SIGHT_RADIUS = 2; // 3 squares visibility
+
+    visibilityGrid = Array(GRID_HEIGHT).fill(null).map(() => Array(GRID_WIDTH).fill(false));
+    const teamValue = myTeam === 'red' ? 1 : 2;
+
+    const setVisible = (centerX, centerY) => {
+        for (let dy = -SIGHT_RADIUS; dy <= SIGHT_RADIUS; dy++) {
+            for (let dx = -SIGHT_RADIUS; dx <= SIGHT_RADIUS; dx++) {
+                const gridX = centerX + dx;
+                const gridY = centerY + dy;
+                if (gridX >= 0 && gridX < GRID_WIDTH && gridY >= 0 && gridY < GRID_HEIGHT) {
+                    if (Math.sqrt(dx * dx + dy * dy) <= SIGHT_RADIUS) {
+                        visibilityGrid[gridY][gridX] = true;
+                    }
+                }
+            }
+        }
+    };
+
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+        for (let x = 0; x < GRID_WIDTH; x++) {
+            if (territoryGrid[y][x] === teamValue) setVisible(x, y);
+        }
+    }
+
+    units.filter(u => u.team === myTeam).forEach(unit => {
+        setVisible(Math.floor(unit.x / GRID_SIZE), Math.floor(unit.y / GRID_SIZE));
+    });
+}
+
 function drawBorder(borderPoints) {
     if (!borderPoints || borderPoints.length < 2) return;
     
@@ -305,11 +271,15 @@ function drawCapturedTerritory() {
     if (!territoryGrid) return;
     
     ctx.save();
-    const GRID_SIZE = 20; // Should match server GRID_SIZE
     
     // Draw territory cells - this automatically shows pockets
     for (let y = 0; y < territoryGrid.length; y++) {
         for (let x = 0; x < territoryGrid[y].length; x++) {
+            // FOG OF WAR CHECK
+            if (!visibilityGrid || !visibilityGrid[y][x]) {
+                continue; // Don't draw territory in the fog
+            }
+
             const cell = territoryGrid[y][x];
             const worldX = x * GRID_SIZE;
             const worldY = y * GRID_SIZE;
@@ -465,13 +435,51 @@ function findPocketCells() {
     return pockets;
 }
 
-// Enhanced unit drawing to show territorial influence
+function drawPath(path) {
+    if (path.length < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(path[0].x, path[0].y);
+    for (let i = 1; i < path.length; i++) {
+        ctx.lineTo(path[i].x, path[i].y);
+    }
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.closePath();
+}
+
+function drawFogOfWar() {
+    if (!visibilityGrid) return;
+
+    ctx.save();
+    ctx.globalAlpha = 0.7;
+    ctx.fillStyle = 'rgb(0, 0, 0)'; // Opaque black fog
+
+    for (let y = 0; y < visibilityGrid.length; y++) {
+        for (let x = 0; x < visibilityGrid[y].length; x++) {
+            if (!visibilityGrid[y][x]) {
+                ctx.fillRect(x * GRID_SIZE, y * GRID_SIZE, GRID_SIZE, GRID_SIZE);
+            }
+        }
+    }
+    ctx.restore();
+}
+
 function drawUnit(unit) {
     if (unit.isDead) return;
+
+    // FOG OF WAR CHECK: Only draw enemy units if they are in a visible area
+    if (unit.team !== myTeam && visibilityGrid) {
+        const gridX = Math.floor(unit.x / GRID_SIZE);
+        const gridY = Math.floor(unit.y / GRID_SIZE);
+        if (!visibilityGrid || !visibilityGrid[gridY] || !visibilityGrid[gridY][gridX]) {
+            return; // Don't draw enemy unit in the fog
+        }
+    }
+
     const displayX = unit.x + (unit.shakeX || 0);
     const displayY = unit.y + (unit.shakeY || 0);
     
-    // Draw territory capture radius when unit is selected
     const isSelected = selectedUnits.some(selected => selected.id === unit.id);
     if (isSelected && unit.team === myTeam) {
         ctx.beginPath();
@@ -483,22 +491,19 @@ function drawUnit(unit) {
         ctx.setLineDash([]);
     }
     
-    // NEW: Draw cut-off supply line indicator
     if (unit.isCutOff && unit.cutOffTimer > 0) {
         const now = Date.now();
-        const pulseIntensity = Math.sin(now * 0.01) * 0.3 + 0.7; // Pulsing effect
+        const pulseIntensity = Math.sin(now * 0.01) * 0.3 + 0.7;
         
-        // Draw warning circle around cut-off units
         ctx.beginPath();
         ctx.arc(displayX, displayY, unit.radius + 12, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(255, 165, 0, ${pulseIntensity})`; // Orange warning
+        ctx.strokeStyle = `rgba(255, 165, 0, ${pulseIntensity})`;
         ctx.lineWidth = 3;
         ctx.setLineDash([4, 4]);
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.closePath();
         
-        // Draw supply cut-off icon (X symbol)
         ctx.strokeStyle = `rgba(255, 0, 0, ${pulseIntensity})`;
         ctx.lineWidth = 2;
         const iconSize = 4;
@@ -513,13 +518,11 @@ function drawUnit(unit) {
         ctx.stroke();
     }
     
-    // Regular unit drawing
     ctx.beginPath();
     ctx.arc(displayX, displayY, unit.radius, 0, Math.PI * 2);
     ctx.fillStyle = unit.team;
     ctx.fill();
     
-    // Draw thicker border for tanks
     if (unit.type === "tank") {
         ctx.strokeStyle = unit.team === 'red' ? 'darkred' : 'darkblue';
         ctx.lineWidth = 3;
@@ -528,7 +531,6 @@ function drawUnit(unit) {
     
     ctx.closePath();
 
-    // Draw selection indicator
     if (isSelected) {
         ctx.beginPath();
         ctx.arc(displayX, displayY, unit.radius + 4, 0, Math.PI * 2);
@@ -538,7 +540,6 @@ function drawUnit(unit) {
         ctx.closePath();
     }
     
-    // Draw fighting indicator
     if (unit.isFighting) {
         ctx.beginPath();
         ctx.arc(displayX, displayY, unit.radius + 8, 0, Math.PI * 2);
@@ -550,7 +551,6 @@ function drawUnit(unit) {
         ctx.closePath();
     }
     
-    // Draw health bar with different colors for cut-off units
     if (unit.health !== undefined) {
         const maxHealth = unit.type === "tank" ? 3000 : 1000;
         const healthPercentage = Math.max(0, unit.health / maxHealth);
@@ -560,71 +560,46 @@ function drawUnit(unit) {
         const barX = displayX - barWidth / 2;
         const barY = displayY - unit.radius - 8;
         
-        // Background bar (red)
         ctx.fillStyle = 'red';
         ctx.fillRect(barX, barY, barWidth, barHeight);
         
-        // Health bar - different color if cut off
-        if (unit.isCutOff) {
-            // Orange health bar for cut-off units to show they're in danger
-            ctx.fillStyle = 'orange';
-        } else {
-            // Normal green health bar
-            ctx.fillStyle = 'green';
-        }
+        ctx.fillStyle = unit.isCutOff ? 'orange' : 'green';
         ctx.fillRect(barX, barY, barWidth * healthPercentage, barHeight);
         
-        // Border around health bar - red border for cut-off units
         ctx.strokeStyle = unit.isCutOff ? 'red' : 'black';
         ctx.lineWidth = 1;
         ctx.strokeRect(barX, barY, barWidth, barHeight);
     }
 }
 
-// Update the gameLoop function to include territorial pressure visualization
-// Add this call in your gameLoop function after drawBorder(border):
-// drawTerritorialPressure();
-
-function drawPath(path) {
-    if (path.length < 2) return;
-    ctx.beginPath();
-    ctx.moveTo(path[0].x, path[0].y);
-    for (let i = 1; i < path.length; i++) {
-        ctx.lineTo(path[i].x, path[i].y);
-    }
-    ctx.strokeStyle = 'white';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.closePath();
-}
-
-// Updated gameLoop function - replace the existing one in main.js
-
 function gameLoop() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
+    // Calculate what's visible for this frame
+    calculateVisibilityGrid();
+
     // Remove dead units
     units = units.filter(u => !u.isDead);
     
     // Draw territorial background and border first (background layer)
     drawBorder(border);
     
+    // Draw the fog on top of the game world, but under units/cities
+    drawFogOfWar();
+
     // Draw cities (middle layer)
-    cities.forEach(city => {
-        drawCity(city);
-    });
+    cities.forEach(drawCity);
     
     // Draw units on top (foreground layer)
     units.forEach(unit => {
         drawUnit(unit);
         
-        // Only draw paths for units belonging to my team
         if (unit.team === myTeam && unit.path && unit.path.length > 0) {
             drawPath(unit.path);
         }
     });
 
-    // Draw the current path being created (always on top)
+    // Draw the current path being created (UI, on top of everything)
     drawPath(currentPath);
 
     requestAnimationFrame(gameLoop);
