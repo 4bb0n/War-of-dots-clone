@@ -93,6 +93,7 @@
         <button id="join-public-game" class="gameButtons">Join Public Match</button>
         <button id="join-private-game" class="gameButtons">Join with Code</button>
         <button id="back-to-main" class="gameButtons">Back</button>
+        <button id="join-any-public-game" class="gameButtons">Join Any Public Game (Fastest)</button>
     </div>
 
     <div id="waiting-message" style="display: none;">
@@ -113,6 +114,7 @@
         const joinGameButton = document.getElementById("join-game");
         const joinPublicGameButton = document.getElementById("join-public-game");
         const joinPrivateGameButton = document.getElementById("join-private-game");
+        const joinAnyPublicGameButton = document.getElementById("join-any-public-game");
         const backToMainButton = document.getElementById("back-to-main");
         const mapSelect = document.getElementById("map-select");
 
@@ -122,28 +124,28 @@
 
         let socket;
 
-        // --- Live Player Counts ---
-        function setupPlayerCountListener() {
-            const liveSocket = io();
-            liveSocket.on('updatePlayerCounts', (counts) => {
-                document.getElementById('total-players').textContent = counts.total;
-                document.getElementById('playing-players').textContent = counts.playing;
-                document.getElementById('waiting-players').textContent = counts.waiting;
+        // --- Live Player Counts & Map Fetching ---
+        (function setupHomePage() {
+            // Use a single, persistent socket for player counts to avoid multiple connections
+            const infoSocket = io();
+            infoSocket.on('updatePlayerCounts', (counts) => {
+                document.getElementById('total-players').textContent = counts.total || 0;
+                document.getElementById('playing-players').textContent = counts.playing || 0;
+                document.getElementById('waiting-players').textContent = counts.waiting || 0;
             });
-        }
-        setupPlayerCountListener();
 
-        // --- Fetch Maps for Public Games ---
-        fetch('/maps')
-            .then(response => response.json())
-            .then(maps => {
-                maps.forEach(mapFile => {
-                    const option = document.createElement('option');
-                    option.value = mapFile;
-                    option.textContent = mapFile.replace('.json', '');
-                    mapSelect.appendChild(option);
+            // Fetch maps for the dropdown
+            fetch('/maps')
+                .then(response => response.json())
+                .then(maps => {
+                    maps.forEach(mapFile => {
+                        const option = document.createElement('option');
+                        option.value = mapFile;
+                        option.textContent = mapFile.replace('.json', '');
+                        mapSelect.appendChild(option);
+                    });
                 });
-            });
+        })();
 
         // --- Navigation ---
         createGameButton.addEventListener("click", () => window.location.href = "/gameCreator.html");
@@ -170,6 +172,14 @@
             startSocketConnection();
             // Send map choice with the findGame event
             socket.emit('findGame', { map: selectedMap });
+        });
+
+        joinAnyPublicGameButton.addEventListener("click", () => {
+            joinOptionsContainer.style.display = 'none';
+            waitingMessage.style.display = 'block';
+            startSocketConnection();
+            // Send 'any' as the map choice for the fastest possible match
+            socket.emit('findGame', { map: 'any' });
         });
 
         joinPrivateGameButton.addEventListener("click", () => {
