@@ -6,23 +6,38 @@ const port = process.env.PORT || 3000;
 const fs = require('fs');
 const { Game, Unit, City } = require('./game.js');
 
+// --- Express Routes ---
+app.get('/', (req, res) => {
+    res.sendFile(__dirname + '/public/home.html');
+});
+app.get('/gamepage', (req, res) => {
+    res.sendFile(__dirname + '/public/index.html');
+});
+app.get('/gameCreator.html', (req, res) => {
+    res.sendFile(__dirname + '/public/gameCreator.html');
+});
+
 app.use(express.static(__dirname + '/public'));
 
-// Serve game.js to the client
 app.get('/game.js', (req, res) => {
     res.sendFile(__dirname + '/game.js');
 });
-let customMap;
-try {
-    const mapData = fs.readFileSync('stalingrad.json', 'utf8');
-    customMap = JSON.parse(mapData);
-    console.log("Custom map loaded successfully.");
-} catch (err) {
-    console.error("Could not load custom_map.json. Using default map.", err);
-    customMap = null; // Fallback to default if no map is found
-}
 
-const games = []
+app.get('/maps', (req, res) => {
+    fs.readdir(__dirname, (err, files) => {
+        if (err) return res.status(500).json({ error: 'Could not list maps' });
+        const mapFiles = files.filter(file => file.endsWith('.json'));
+        res.json(mapFiles);
+    });
+});
+
+// --- Game State Management ---
+let publicGameQueue = []; // Holds socket IDs of players waiting for a public game
+const activeGames = {}; // Holds all active games, keyed by a unique game ID
+
+function generateGameId() {
+    return Math.floor(1000 + Math.random() * 9000).toString();
+}
 
 // Collision detection helper functions
 function getDistance(unit1, unit2) {
@@ -491,12 +506,65 @@ function updateCityEffects(game) {
     });
 }
 
+// --- Socket.IO Connection Handling ---
 io.on('connection', (socket) => {
     console.log('a player connected:', socket.id);
-    searchGame(socket.id);
 
+    socket.on('findGame', () => {
+        console.log(`Player ${socket.id} is searching for a public game.`);
+        searchForPublicGame(socket);
+    });
+
+    socket.on('createGame', (options) => {
+        const gameId = generateGameId();
+        const game = new Game(socket.id);
+        game.id = gameId;
+        game.map = options.map || 'default.json';
+        activeGames[gameId] = game;
+
+        socket.join(gameId);
+        socket.gameId = gameId; // Associate gameId with the socket
+        console.log(`Player ${socket.id} created game ${gameId} with map ${game.map}`);
+        socket.emit('gameCreated', { gameId });
+    });
+
+    socket.on('joinGame', (gameId) => {
+        const game = activeGames[gameId];
+        if (game && game.teamBlue === null) {
+            game.joinGame(socket.id);
+            socket.join(gameId);
+            socket.gameId = gameId; // Associate gameId with the socket
+            console.log(`Player ${socket.id} joined game ${gameId}`);
+            startGame(game);
+        } else {
+            socket.emit('joinError', 'Game not found or is full.');
+        }
+    });
+
+    socket.on('disconnect', () => {
+        console.log('a player disconnected:', socket.id);
+
+        // If player was in the public queue, remove them
+        publicGameQueue = publicGameQueue.filter(id => id !== socket.id);
+
+        // If player was in a game, end the game
+        const gameId = socket.gameId;
+        if (gameId && activeGames[gameId] && activeGames[gameId].canDelete) {
+            const game = activeGames[gameId];
+            const opponentId = game.teamRed === socket.id ? game.teamBlue : game.teamRed;
+            if (opponentId) {
+                io.to(opponentId).emit('gameComplete', { win: true });
+            }
+            console.log(`Game ${gameId} ended due to disconnect.`);
+            delete activeGames[gameId];
+        }
+    });
+
+    // --- In-Game Actions ---
     socket.on('unitMove', (data) => {
-        const game = games.find(g => g.teamRed === socket.id || g.teamBlue === socket.id);
+        const gameId = socket.gameId;
+        const game = activeGames[gameId];
+
         if (game) {
             // Find the correct unit in the server's state and set its path
             const allUnits = [...game.redUnits, ...game.blueUnits];
@@ -518,28 +586,64 @@ io.on('connection', (socket) => {
             });
         }
     });
-    
-    socket.on('disconnect', () => {
-        for (let i = 0; i < games.length; i++){
-            if (games[i].teamBlue === socket.id || games[i].teamRed === socket.id){
-                games.splice(i, 1)
+
+    socket.on('reconnectPlayer', (oldSocketId) => {
+        console.log(`Player ${socket.id} is attempting to reconnect for ${oldSocketId}`);
+        for (const gameId in activeGames) {
+            const game = activeGames[gameId];
+            if (game.teamRed === oldSocketId) {
+                // This player is red team. Update their socket ID.
+                game.teamRed = socket.id;
+                socket.gameId = gameId;
+                socket.join(gameId);
+                console.log(`Reconnected player ${oldSocketId} as ${socket.id} in game ${gameId}`);
+                // Now send them the game start data.
+                const initialGameState = { units: [...game.redUnits, ...game.blueUnits], cities: [...game.redCities, ...game.blueCities] };
+                socket.emit('gameStart', { team: 'red', ...initialGameState });
+
+            } else if (game.teamBlue === oldSocketId) {
+                // This player is blue team. Update their socket ID.
+                game.teamBlue = socket.id;
+                socket.gameId = gameId;
+                socket.join(gameId);
+                console.log(`Reconnected player ${oldSocketId} as ${socket.id} in game ${gameId}`);
+                // Now send them the game start data.
+                const initialGameState = { units: [...game.redUnits, ...game.blueUnits], cities: [...game.redCities, ...game.blueCities] };
+                socket.emit('gameStart', { team: 'blue', ...initialGameState });
             }
         }
-        console.log('a player disconnected:', socket.id);
     });
 });
 
-function searchGame(id){
-    for (let i = 0; i < games.length; i++){
-        if (games[i].teamBlue === null){
-            games[i].joinGame(id)
-            startGame(games[i]);
-            return;
-        }
-    }
+// --- Game Logic Functions ---
+function searchForPublicGame(socket) {
+    if (publicGameQueue.length > 0) {
+        // Match found
+        const opponentSocketId = publicGameQueue.shift();
+        const opponentSocket = io.sockets.sockets.get(opponentSocketId);
 
-    // If no open games are found, create a new one for the player.
-    games.push(new Game(id));
+        if (opponentSocket) {
+            const gameId = generateGameId();
+            const game = new Game(opponentSocketId, socket.id); // teamRed, teamBlue
+            game.id = gameId;
+            game.map = 'default.json'; // Public games use the default map
+            activeGames[gameId] = game;
+
+            socket.join(gameId);
+            opponentSocket.join(gameId);
+            socket.gameId = gameId;
+            opponentSocket.gameId = gameId;
+
+            console.log(`Starting public game ${gameId} between ${opponentSocketId} and ${socket.id}`);
+            startGame(game);
+        } else {
+            // Opponent disconnected before match, put current player in queue
+            publicGameQueue.push(socket.id);
+        }
+    } else {
+        // No match found, add to queue
+        publicGameQueue.push(socket.id);
+    }
 }
 
 function startGame(game) {
@@ -556,140 +660,166 @@ function startGame(game) {
         game.borderPoints.push({ x: 500, y: y, targetX: 500 });
     }
     
-    if (customMap) {
-        // --- LOAD FROM CUSTOM MAP ---
-        
-        // Load cities from the map file
-        customMap.cities.forEach(cityData => {
+    let mapToLoad = game.map || 'default.json';
+    let gameMapData;
+    try {
+        const mapData = fs.readFileSync(mapToLoad, 'utf8');
+        gameMapData = JSON.parse(mapData);
+        console.log(`Map '${mapToLoad}' loaded for game ${game.id}.`);
+    } catch (err) {
+        console.error(`Could not load map '${mapToLoad}'. Using default setup.`, err);
+        gameMapData = null;
+    }
+
+    if (gameMapData) {
+        // Load from map file
+        gameMapData.cities.forEach(cityData => {
             const newCity = new City(cityData.x, cityData.y, cityData.team);
             if (cityData.team === 'red') game.redCities.push(newCity);
             else game.blueCities.push(newCity);
         });
 
-        // Load pre-placed units from the map file
-        if (customMap.units) {
-            customMap.units.forEach(unitData => {
+        if (gameMapData.units) {
+            gameMapData.units.forEach(unitData => {
                 const newUnit = new Unit(unitData.x, unitData.y, unitData.team, unitData.type);
                 if (unitData.team === 'red') game.redUnits.push(newUnit);
                 else game.blueUnits.push(newUnit);
             });
         }
 
-        // Initialize territory from the custom map file
-        if (customMap.territoryGrid) {
-            // Deep copy the territory grid from the map to avoid modifying the original
-            game.territoryGrid = customMap.territoryGrid.map(row => [...row]);
+        if (gameMapData.territoryGrid) {
+            game.territoryGrid = gameMapData.territoryGrid.map(row => [...row]);
         } else {
-            // If custom map doesn't have territory grid, initialize default one
-            game.territoryGrid = null; // This will trigger initializeTerritoryGrid in updateBorder
+            game.territoryGrid = null;
         }
         
         game.GRID_SIZE = 20;
         game.GRID_WIDTH = 1000 / 20;
         game.GRID_HEIGHT = 600 / 20;
-
     } else {
-        // --- FALLBACK TO ORIGINAL HARDCODED SETUP ---
-        console.log("No custom map found, using default game setup.");
-        for(let i = 0; i < 10; i++){
-            game.redUnits.push(new Unit(100, Math.random() * 600, "red"));
-            game.blueUnits.push(new Unit(800, Math.random() * 600, "blue"));
-        }
-        for(let i = 0; i < 5; i++){
-            game.redUnits.push(new Unit(100, Math.random() * 600, "red", "tank"));
-            game.blueUnits.push(new Unit(800, Math.random() * 600, "blue", "tank"));
-        }
+        // Fallback to default setup
+        console.log("Using default game setup.");
         game.blueCities = [new City(900, 100, "blue"), new City(900, 300, "blue"), new City(900, 500, "blue")];
         game.redCities = [new City(50, 100, "red"), new City(50, 300, "red"), new City(50, 500, "red")];
-        
-        // Force territory grid to be reinitialized with default setup
         game.territoryGrid = null;
     }
 
-    io.to(game.teamRed).emit('gameStart', { team: 'red', units: [...game.redUnits, ...game.blueUnits], cities: [...game.redCities, ...game.blueCities] });
-    io.to(game.teamBlue).emit('gameStart', { team: 'blue', units: [...game.redUnits, ...game.blueUnits], cities: [...game.redCities, ...game.blueCities] });
+        io.to(game.teamRed).emit('gameReady', { socketId: game.teamRed });
+    io.to(game.teamBlue).emit('gameReady', { socketId: game.teamBlue });
+    
+    // Start the game
+    game.startGame();
+    
+    // CRITICAL FIX: Send gameStart to individual sockets, not rooms
+    const initialGameState = {
+        units: [...game.redUnits, ...game.blueUnits],
+        cities: [...game.redCities, ...game.blueCities],
+        border: game.borderPoints
+    };
+    
+    console.log(`Sending gameStart to both players in game ${game.id}`);
+    console.log(`Red player socket: ${game.teamRed}`);
+    console.log(`Blue player socket: ${game.teamBlue}`);
+    
+    // Get the actual socket objects and emit directly to them
+    const redSocket = io.sockets.sockets.get(game.teamRed);
+    const blueSocket = io.sockets.sockets.get(game.teamBlue);
+    
+    if (redSocket) {
+        redSocket.emit('gameStart', { team: 'red', ...initialGameState });
+        console.log('gameStart sent to red player');
+    } else {
+        console.error('Red player socket not found!');
+    }
+    
+    if (blueSocket) {
+        blueSocket.emit('gameStart', { team: 'blue', ...initialGameState });
+        console.log('gameStart sent to blue player');
+    } else {
+        console.error('Blue player socket not found!');
+    }
 }
-
 server.listen(port, () => {
     console.log('Server listening at port %d', port);
 });
 
 // Server-side game loop with collision detection
+function updateGame(game) {
+    if (!game.started) return;
+
+    let allUnits = [...game.redUnits, ...game.blueUnits];
+    
+    // Update unit positions
+    allUnits.forEach(unit => {
+        unit.update();
+
+        if(unit.health < unit.maxHealth && !unit.isFighting){
+            unit.health += 1;
+        }
+        
+        // Apply shake effect if fighting
+        if (unit.isFighting && unit.fightTimer > 0) {
+            const shakeIntensity = 1.5;
+            unit.shakeX = (Math.random() - 0.5) * shakeIntensity;
+            unit.shakeY = (Math.random() - 0.5) * shakeIntensity;
+        } else {
+            unit.shakeX = 0;
+            unit.shakeY = 0;
+        }
+    });
+
+    // Update cities and spawn units
+    const allCities = [...game.redCities, ...game.blueCities];
+    allCities.forEach(city => {
+        city.update();
+        if (city.spawnInterval === 0) {
+            city.spawnInterval = 2000;
+            const team = city.team;
+            const unitType = city.spawnCount < 3 ? "infantry" : "tank";
+            if (city.spawnCount < 3) city.spawnCount += 1;
+            else city.spawnCount = 0;
+            const newUnit = new Unit(city.x, city.y, team, unitType);
+            
+            if (team === 'red') {
+                game.redUnits.push(newUnit);
+            } else {
+                game.blueUnits.push(newUnit);
+            }
+        }
+    });
+
+    // Check for city captures
+    checkCityCaptures(game);
+    
+    // Update city effects
+    updateCityEffects(game);
+    
+    // Update the border based on unit positions
+    updateBorder(game);
+    
+    // NEW: Handle territory encirclement after territory updates
+    handleTerritoryEncirclement(game);
+
+    // Handle collisions after movement
+    handleCollisions(allUnits);
+    
+    // Remove dead units and update the allUnits array for broadcasting
+    game.redUnits = game.redUnits.filter(unit => !unit.isDead);
+    game.blueUnits = game.blueUnits.filter(unit => !unit.isDead);
+    allUnits = [...game.redUnits, ...game.blueUnits];
+    
+    // Broadcast the new state to all players in the game
+    const gameState = { 
+        units: allUnits, 
+        cities: allCities, 
+        border: game.borderPoints,
+        territoryGrid: game.territoryGrid,
+        allBoundaries: game.allBoundaries
+    };
+    io.to(game.id).emit('gameStateUpdate', gameState);
+}
+
 const TICK_RATE = 30;
 setInterval(() => {
-    games.forEach(game => {
-        if (!game.started) return;
-
-        let allUnits = [...game.redUnits, ...game.blueUnits];
-        
-        // Update unit positions
-        allUnits.forEach(unit => {
-            unit.update();
-
-            if(unit.health < unit.maxHealth && !unit.isFighting){
-                unit.health += 1;
-            }
-            
-            // Apply shake effect if fighting
-            if (unit.isFighting && unit.fightTimer > 0) {
-                const shakeIntensity = 1.5;
-                unit.shakeX = (Math.random() - 0.5) * shakeIntensity;
-                unit.shakeY = (Math.random() - 0.5) * shakeIntensity;
-            } else {
-                unit.shakeX = 0;
-                unit.shakeY = 0;
-            }
-        });
-
-        // Update cities and spawn units
-        const allCities = [...game.redCities, ...game.blueCities];
-        allCities.forEach(city => {
-            city.update();
-            if (city.spawnInterval === 0) {
-                city.spawnInterval = 2000;
-                const team = city.team;
-                const unitType = city.spawnCount < 3 ? "infantry" : "tank";
-                if (city.spawnCount < 3) city.spawnCount += 1;
-                else city.spawnCount = 0;
-                const newUnit = new Unit(city.x, city.y, team, unitType);
-                
-                if (team === 'red') {
-                    game.redUnits.push(newUnit);
-                } else {
-                    game.blueUnits.push(newUnit);
-                }
-            }
-        });
-
-        // Check for city captures
-        checkCityCaptures(game);
-        
-        // Update city effects
-        updateCityEffects(game);
-        
-        // Update the border based on unit positions
-        updateBorder(game);
-        
-        // NEW: Handle territory encirclement after territory updates
-        handleTerritoryEncirclement(game);
-
-        // Handle collisions after movement
-        handleCollisions(allUnits);
-        
-        // Remove dead units and update the allUnits array for broadcasting
-        game.redUnits = game.redUnits.filter(unit => !unit.isDead);
-        game.blueUnits = game.blueUnits.filter(unit => !unit.isDead);
-        allUnits = [...game.redUnits, ...game.blueUnits];
-        
-        // Broadcast the new state to all players in the game
-        const gameState = { 
-            units: allUnits, 
-            cities: allCities, 
-            border: game.borderPoints,
-            territoryGrid: game.territoryGrid,
-            allBoundaries: game.allBoundaries
-        };
-        io.to(game.teamRed).emit('gameStateUpdate', gameState);
-        io.to(game.teamBlue).emit('gameStateUpdate', gameState);
-    });
+    Object.values(activeGames).forEach(updateGame);
 }, 1000 / TICK_RATE);
